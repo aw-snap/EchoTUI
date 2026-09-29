@@ -1,0 +1,19 @@
+[project]
+name = "echotui"
+version = "0.1.0"
+description = "Terminal UI to browse, download and watch Echo360 lecture recordings in mpv"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = ["textual>=8.2", "textual-image>=0.14", "keyring>=25.7"]
+
+[project.scripts]
+echotui = "echotui.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=9"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
