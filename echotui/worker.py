@@ -16,6 +16,8 @@ POLL = 300  # seconds between re-checks of a lecture that is still processing
 PREPASS = 300  # seconds of audio captioned ahead of time
 MODEL = Path.home() / ".config/mpv/ggml-small.en.bin"
 _bad: set[Path] = set()  # files whose pre-pass failed; not retried this run
+_busy: set[Path] = set()  # files being captioned right now; one pre-pass per file at a time
+_busy_lock = threading.Lock()
 
 
 def video_path(course: str, row: dict, n: int, q: str) -> Path:
@@ -92,11 +94,15 @@ def step(client, item: dict):
         dest = video_path(item["course"], row, int(n), q)
         dest.parent.mkdir(parents=True, exist_ok=True)
         if not dest.exists():
+            if q == "full" and MODEL.exists() and not dest.with_suffix(".srt").exists():
+                # the low file has the same audio with far less video to pull alongside the download
+                caption_live(dest, client.signed_url(row["media"], model.pick_file(f, "low"), row["id"]))
             url = client.signed_url(row["media"], model.pick_file(f, q), row["id"])
             try:
                 client.fetch(url, dest, progress=_progress(item["lesson"], len(picks), len(paths)))
             except Unqueued:
                 dest.with_name(dest.name + ".part").unlink(missing_ok=True)
+                dest.with_suffix(".srt").unlink(missing_ok=True)  # the live pre-pass may have finished first
                 return
         paths.append(dest)
     store.dequeue(item["lesson"])
@@ -136,28 +142,60 @@ def run_pausable(cmd: list[str], tick: float = 1.0):
 
 def pending_subs() -> list[Path]:
     return [p for p in sorted(store.VIDEOS.glob("*/*.mp4"))
-            if not p.name.endswith("-low.mp4") and not p.with_suffix(".srt").exists() and p not in _bad]
+            if not p.name.endswith("-low.mp4") and not p.with_suffix(".srt").exists()
+            and p not in _bad and p not in _busy]
 
 
-def make_srt(mp4: Path):
+def _claim(mp4: Path) -> bool:
+    with _busy_lock:
+        if mp4 in _busy:
+            return False
+        _busy.add(mp4)
+        return True
+
+
+def make_srt(mp4: Path, src: str | None = None):
+    """Caption the first PREPASS seconds of mp4, reading the audio from src (a URL) if given."""
     with tempfile.TemporaryDirectory() as d:
         wav = Path(d) / "a.wav"
-        run_pausable(["ffmpeg", "-nostdin", "-y", "-v", "error", "-i", str(mp4), "-t", str(PREPASS),
-                      "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(wav)])
+        # not pausable: a URL read frozen for a whole lecture would time out and lose the pre-pass
+        subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error", "-rw_timeout", "30000000", "-i", src or str(mp4),
+                        "-t", str(PREPASS), "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(wav)],
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
         run_pausable(["whisper-cli", "-m", str(MODEL), "-f", str(wav), "-osrt", "-of", str(Path(d) / "a")])
-        if mp4.exists():  # deleted from the library meanwhile → drop the result
+        # deleted from the library or unqueued meanwhile → drop the result
+        if mp4.exists() or mp4.with_name(mp4.name + ".part").exists():
             shutil.move(Path(d) / "a.srt", mp4.with_suffix(".srt"))  # only a finished srt ever lands
+
+
+def caption_live(mp4: Path, url: str):
+    """Pre-caption mp4 from its URL in a thread, so the srt is ready about when the download is."""
+    if not _claim(mp4):
+        return
+
+    def run():
+        try:
+            make_srt(mp4, url)
+        except (OSError, subprocess.CalledProcessError) as e:  # subtitle_pass retries from the local file
+            print(f"live srt {mp4.name}: {e!r}", flush=True)
+        finally:
+            _busy.discard(mp4)
+    threading.Thread(target=run).start()
 
 
 def subtitle_pass():
     for mp4 in pending_subs():
         while player.active():
             time.sleep(1)
+        if mp4.with_suffix(".srt").exists() or not _claim(mp4):  # done or started since the list was made
+            continue
         try:
             make_srt(mp4)
         except (OSError, subprocess.CalledProcessError) as e:
             _bad.add(mp4)
             print(f"srt {mp4.name}: {e!r}", flush=True)
+        finally:
+            _busy.discard(mp4)
 
 
 def _waiting() -> bool:
@@ -172,7 +210,7 @@ def run_until_idle(client, poll: float = POLL, tick: float = 1.0):
         if (subs is None or not subs.is_alive()) and pending_subs() and not player.active():
             subs = threading.Thread(target=subtitle_pass)  # own thread so a frozen whisper can't block downloads
             subs.start()
-        if not (subs and subs.is_alive()) and not pending_subs() and not _waiting():
+        if not (subs and subs.is_alive()) and not _busy and not pending_subs() and not _waiting():
             return
         time.sleep(tick)
 

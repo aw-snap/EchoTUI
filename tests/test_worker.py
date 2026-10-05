@@ -1,3 +1,4 @@
+import threading
 import time
 
 from echotui import player, store, worker
@@ -160,3 +161,44 @@ def test_unqueue_mid_download_stops_and_removes_partial(monkeypatch):
     worker.step(UnqueuedMidDownload(syllabus(isAvailable=True)), dict(ITEM, feeds={"1": "full"}))
     assert list((store.VIDEOS / "COSC264").iterdir()) == []
     assert sent == [] and store.load()["queue"] == []
+
+
+def test_full_feed_is_captioned_from_the_low_url_while_downloading(monkeypatch, tmp_path):
+    (tmp_path / "model.bin").touch()
+    monkeypatch.setattr(worker, "MODEL", tmp_path / "model.bin")
+    calls = []
+
+    def fake_srt(mp4, src=None):
+        calls.append((mp4.name, src))
+        mp4.with_suffix(".srt").write_text("1")
+    monkeypatch.setattr(worker, "make_srt", fake_srt)
+    item = {**ITEM, "feeds": {"1": "full", "2": "low"}}
+    store.enqueue(dict(item))
+    worker.step(FakeClient(syllabus(isAvailable=True)), item)
+    for _ in range(100):
+        if not worker._busy:
+            break
+        time.sleep(0.01)
+    assert calls == [("COSC264-2026-09-28-LecA-s1-full.mp4", "https://x/sd1.mp4")]  # not for the low feed
+    assert (store.VIDEOS / "COSC264" / "COSC264-2026-09-28-LecA-s1-full.srt").exists()
+
+
+def test_a_file_is_only_ever_pre_captioned_once_at_a_time(monkeypatch):
+    mp4 = store.VIDEOS / "COSC264" / "a-s1-full.mp4"
+    mp4.parent.mkdir(parents=True)
+    mp4.touch()
+    gate, calls = threading.Event(), []
+
+    def fake_srt(mp4, src=None):
+        calls.append(src)
+        gate.wait(2)
+    monkeypatch.setattr(worker, "make_srt", fake_srt)
+    worker.caption_live(mp4, "https://x/a")
+    worker.caption_live(mp4, "https://x/b")  # e.g. a re-queue while the first pass still runs
+    worker.subtitle_pass()
+    gate.set()
+    for _ in range(100):
+        if not worker._busy:
+            break
+        time.sleep(0.01)
+    assert calls == ["https://x/a"]

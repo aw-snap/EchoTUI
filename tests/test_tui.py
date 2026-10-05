@@ -268,6 +268,48 @@ def test_courses_show_last_released_right_aligned_without_lesson_count():
     asyncio.run(go())
 
 
+def test_courses_tick_a_watched_newest_lecture_and_list_a_timeline():
+    now = datetime.now(timezone.utc)
+    iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%S.000Z")  # noqa: E731
+    syl = _syllabus_row(iso(now - timedelta(hours=1)))
+    nxt = _syllabus_row(iso(now + timedelta(days=1)))[0]
+    nxt["lesson"]["isFuture"], nxt["lesson"]["medias"] = True, []
+    nxt["lesson"]["lesson"].update(id="L2", name="COSC264-26S2-LecB-Next", timing={"start": "2099-01-01T15:00"})
+    old = _syllabus_row(iso(now - timedelta(days=30)))[0]
+    old["lesson"]["lesson"].update(id="L0", name="COSC264-26S2-LecZ-Old")
+    syl += [nxt, old]
+    enr = [{"termsById": {"t": {"name": "FY", "isActive": True}},
+            "userSections": [{"sectionId": "s1", "sectionName": "COSC264-26S2", "courseCode": "COSC264",
+                              "courseName": "Networks", "termId": "t"}]}]
+    with store.edit() as s:
+        s["watched"] = {"COSC264-2026-09-28-LecA": {"last": 1, "full": True}}
+
+    class Client(_FakePrefetchClient):
+        def get_json(self, path):
+            return enr if path == "/user/enrollments" else super().get_json(path)
+
+    async def go():
+        app = CoursesApp(Client(syl))
+        async with app.run_test(size=(70, 10)) as pilot:
+            for _ in range(20):
+                await pilot.pause(0.05)
+            ol = app.screen.query_one(tui.VimList)
+            lines = [ol.render_line(i).text for i in range(4)]
+            assert "✓ " in lines[0]  # newest released lecture (LecA) is watched
+            assert lines[1].strip() == "Timeline"
+            assert "LecA" in lines[2] and "● watched" in lines[2]
+            assert "LecB" in lines[3] and "upcoming" in lines[3] and "Tomorrow" in lines[3]
+            assert ol.option_count == 4  # the 30-day-old lecture is outside the timeline
+            await pilot.press("j")  # skips the heading
+            assert ol.highlighted == 2
+            await pilot.press("enter")
+            for _ in range(10):
+                await pilot.pause(0.05)
+            # LecA sits under the upcoming LecB on the lectures screen: the cursor jumped to it
+            assert isinstance(app.screen, tui.LecturesScreen) and app.screen.current()["id"] == "L1"
+    asyncio.run(go())
+
+
 def test_lecture_rows_stay_on_one_line_without_repeated_prefix():
     long = "COSC264-26S2-LecA-Introduction to Computer Networks and the Internet, part one of many"
     syl = _syllabus_row("2026-09-28T02:00:00.000Z")
@@ -343,14 +385,20 @@ def test_lecture_on_idle_screen_is_greyed_and_tagged():
     asyncio.run(go())
 
 
-def test_lecture_rows_show_dd_mm_yyyy():
+def test_lecture_rows_show_weekday_and_date(monkeypatch):
+    class Day(tui.date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 10, 20)
+    monkeypatch.setattr(tui, "date", Day)
+
     async def go():
         app = LecturesApp()
         app.client = _FakePrefetchClient(_syllabus_row("2026-09-28T02:00:00.000Z"))
         async with app.run_test(size=(90, 10)) as pilot:
             for _ in range(10):
                 await pilot.pause(0.05)
-            assert app.screen.query_one(tui.VimList).render_line(0).text.startswith("28-09-2026  LecA")
+            assert app.screen.query_one(tui.VimList).render_line(0).text.startswith("Mon 28-09  LecA")
     asyncio.run(go())
 
 
@@ -368,6 +416,10 @@ def test_lecture_rows_band_weeks_and_show_watched():
     with store.edit() as s:
         s["watched"] = {"COSC264-2026-09-28-LecA": {"last": 1, "full": True},
                         "COSC264-2026-09-25-LecC": {"last": 1, "full": False}}
+    d = store.VIDEOS / "COSC264"
+    d.mkdir(parents=True)
+    for k in ("2026-09-28-LecA", "2026-09-25-LecC"):
+        (d / f"COSC264-{k}-s1-full.mp4").touch()
 
     async def go():
         app = LecturesApp()
@@ -380,6 +432,9 @@ def test_lecture_rows_band_weeks_and_show_watched():
             await pilot.pause()
             week40, a, b = (ol.render_line(i) for i in range(3))  # no separator lines between weeks
             assert "● watched" in week40.text and "◐ started" in a.text and "ready" in b.text
+            gone = app.screen.row_text(app.screen.rows[2], None, {"full": True})  # watched, then deleted
+            assert "watched" in gone.plain and "●" not in gone.plain
+            assert "blue" not in {str(sp.style) for sp in gone.spans}  # plain like ready
 
             def bg(strip):
                 return {seg.style.bgcolor.name for seg in strip if seg.style and seg.style.bgcolor}
@@ -477,3 +532,50 @@ def test_palette_lists_todo_command():
     app = tui.EchoApp.__new__(tui.EchoApp)
     App.__init__(app)  # skip EchoApp.__init__: no api client needed to list commands
     assert "Todo" in [c.title for c in app.get_system_commands(tui.Screen())]
+
+
+GRUVBOX = """system: "base16"
+name: "Gruvbox dark, hard"
+variant: "dark"
+palette:
+  base00: "#1d2021" # ----
+  base01: "#3c3836"
+  base02: "#504945"
+  base03: "#665c54"
+  base04: "#bdae93"
+  base05: "#d5c4a1"
+  base06: "#ebdbb2"
+  base07: "#fbf1c7"
+  base08: "#fb4934"
+  base09: "#fe8019"
+  base0A: "#fabd2f"
+  base0B: "#b8bb26"
+  base0C: "#8ec07c"
+  base0D: "#83a598"
+  base0E: "#d3869b"
+  base0F: "#d65d0e"
+"""
+
+
+class TintyApp(App):
+    follow_tinty = tui.EchoApp.follow_tinty
+    _tinty = None
+
+
+def test_app_follows_the_tinty_scheme(tmp_path, monkeypatch):
+    for k in ("BAND", "GREY", "WHITE"):
+        monkeypatch.setattr(tui, k, getattr(tui, k))  # restored after the test
+    monkeypatch.setattr(tui, "TINTY", tmp_path)
+    assert tui.tinty_palette() is None  # no tinty: keep the default theme
+    (tmp_path / "repos/schemes/base16").mkdir(parents=True)
+    (tmp_path / "repos/schemes/base16/gruvbox-dark-hard.yaml").write_text(GRUVBOX)
+    (tmp_path / "current_scheme").write_text("base16-gruvbox-dark-hard")
+
+    async def go():
+        app = TintyApp()
+        async with app.run_test():
+            app.follow_tinty()
+            assert app.theme == "base16-gruvbox-dark-hard" and app.current_theme.background == "#1d2021"
+            assert app.ansi_theme.ansi_colors[4].hex == "#83a598"  # ANSI blue = base0D
+            assert (tui.BAND, tui.GREY, tui.WHITE) == ("#3c3836", "#665c54", "#fbf1c7")
+    asyncio.run(go())

@@ -116,17 +116,18 @@ def test_when():
     now = datetime(2026, 9, 28, 20, 0)
     assert model.when(datetime(2026, 9, 28, 15, 0), now) == "Today 15:00"
     assert model.when(datetime(2026, 9, 27, 10, 5), now) == "Yesterday 10:05"
+    assert model.when(datetime(2026, 9, 29, 9, 0), now) == "Tomorrow 09:00"
     assert model.when(datetime(2026, 9, 23, 9, 0), now) == "Wed 09:00"
     assert model.when(datetime(2026, 9, 14, 9, 0), now) == "14-09-2026 09:00"
 
 
-def test_latest_released():
-    rows = [{"status": "upcoming", "start_utc": "2026-09-29T02:00:00.000Z"},
-            {"status": "ready", "start_utc": "2026-09-28T02:00:00.000Z"},
-            {"status": "processing", "start_utc": "2026-09-28T05:00:00.000Z"},
-            {"status": "ready", "start_utc": "2026-09-21T02:00:00.000Z"}]
-    assert model.latest_released(rows) == datetime(2026, 9, 28, 2, tzinfo=timezone.utc)
-    assert model.latest_released([]) is None
+def test_timeline_keeps_the_near_week_oldest_first():
+    now = datetime(2026, 9, 28, 3, tzinfo=timezone.utc)
+    rows = [{"id": "far", "start_utc": "2026-10-09T02:00:00.000Z"},
+            {"id": "next", "start_utc": "2026-09-29T02:00:00.000Z"},
+            {"id": "today", "start_utc": "2026-09-28T02:00:00.000Z"},
+            {"id": "old", "start_utc": "2026-09-14T02:00:00.000Z"}]
+    assert [r["id"] for r in model.timeline(rows, now, 7)] == ["today", "next"]
 
 
 def test_default_choice_skips_login_screen_feeds():
@@ -153,3 +154,9 @@ def test_collapse_keeps_best_ranked_duplicate():
             {"id": "c", "date": "2026-09-23", "label": "LecA", "name": "X"}]
     assert [r["id"] for r in model.collapse(rows, lambda r: r["id"] == "b")] == ["b", "c"]
     assert [r["id"] for r in model.collapse(rows, lambda r: 0)] == ["a", "c"]  # tie keeps the first
+
+
+def test_day():
+    today = date(2026, 9, 28)
+    assert [model.day(d, today) for d in ("2026-09-29", "2026-09-28", "2026-09-27", "2026-09-23")] == [
+        "Tomorrow", "Today", "Yesterday", "Wed 23-09"]

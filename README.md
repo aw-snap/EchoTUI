@@ -12,6 +12,10 @@ with whisper.cpp while you watch.
 - Two-feed lectures play as a main window plus a small synced picture-in-picture window.
 - Watched lectures are deleted automatically: 1 h after you finish one, 4 h after a partial watch,
   or 2 weeks after download if you never open it.
+- The courses page ticks courses whose newest lecture you've watched, and lists a timeline of every
+  course's lectures from the past week and the week ahead. Pressing `enter` on one jumps straight to it.
+- If you use [tinty](https://github.com/tinted-theming/tinty), EchoTUI uses your current base16/base24
+  scheme and switches with it when you `tinty apply`.
 
 ## Requirements
 
@@ -60,7 +64,7 @@ uv tool install -e .
      https://raw.githubusercontent.com/aw-snap/EchoTUI/main/mpv/autocaption.lua
    ```
 
-After that, EchoTUI captions the first 5 minutes of each download ahead of time, and mpv live-captions
+After that, EchoTUI captions the first 5 minutes of each lecture while it downloads, and mpv live-captions
 the rest while you watch. In any other mpv session, press `ctrl+c` to caption the current video.
 
 ## Setup

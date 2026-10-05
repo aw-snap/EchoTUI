@@ -115,13 +115,24 @@ def week_groups(rows: list[dict]) -> list[int]:
     return out
 
 
-def latest_released(rows: list[dict]) -> datetime | None:
-    ready = [r["start_utc"] for r in rows if r["status"] == "ready"]
-    return datetime.fromisoformat(max(ready)) if ready else None
+def start(r: dict) -> datetime:
+    return datetime.fromisoformat(r["start_utc"])
+
+
+def timeline(rows: list[dict], now: datetime, days: int) -> list[dict]:
+    """Lectures from `days` ago to `days` ahead, oldest first."""
+    near = [r for r in rows if abs(start(r) - now) <= timedelta(days=days)]
+    return sorted(near, key=start)
 
 
 def when(t: datetime, now: datetime) -> str:
-    """'Today 15:00', 'Yesterday 10:05', 'Wed 09:00' within a week, else '14-09-2026 09:00'."""
+    """'Today 15:00', 'Yesterday 10:05', 'Tomorrow 09:00', 'Wed 09:00' within a week, else '14-09-2026 09:00'."""
     days = (now.date() - t.date()).days
-    day = {0: "Today", 1: "Yesterday"}.get(days) or (f"{t:%a}" if days < 7 else f"{t:%d-%m-%Y}")
+    day = {0: "Today", 1: "Yesterday", -1: "Tomorrow"}.get(days) or (f"{t:%a}" if days < 7 else f"{t:%d-%m-%Y}")
     return f"{day} {t:%H:%M}"
+
+
+def day(d: str, today: date) -> str:
+    """'Today', 'Yesterday', 'Tomorrow', else weekday and date: 'Mon 21-09'."""
+    x = date.fromisoformat(d)
+    return {0: "Today", 1: "Yesterday", -1: "Tomorrow"}.get((today - x).days) or f"{x:%a %d-%m}"

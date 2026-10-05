@@ -1,4 +1,6 @@
 """Textual UI: courses → lectures → (video picker), plus the downloads library."""
+import os
+import re
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -6,13 +8,16 @@ from urllib.error import HTTPError
 
 from PIL import Image as PILImage, ImageDraw, ImageEnhance, ImageOps  # comes with textual-image
 from rich.table import Table
+from rich.terminal_theme import TerminalTheme
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
+from textual.theme import Theme
 from textual.widgets import Footer, Header, Input, OptionList, Static
+from textual.widgets.option_list import Option
 from textual.worker import get_current_worker
 from textual_image._terminal import get_cell_size
 from textual_image.widget import Image  # import before the app starts: it probes the terminal
@@ -27,8 +32,27 @@ BAND = "#303030"  # background of every other week, so a week's lectures read as
 GREY = "#626262"  # upcoming lectures and ones stuck on a lectern idle screen
 WHITE = "#ffffff"  # grey/dim text on the cursor row: grey on the blue highlight is hard to read
 RECENT_DAYS = 14  # how far back the launch prefetch looks for lectures to grab frames for
+TIMELINE_DAYS = 7  # the courses page timeline shows lectures this many days either side of now
 _REPO = Path(__file__).parents[1]  # ctrl+p → Todo appends to the repo's TODO.md in a source checkout, else DATA
 TODO = (_REPO if (_REPO / "pyproject.toml").exists() else store.DATA) / "TODO.md"
+TINTY = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "tinted-theming/tinty"
+
+
+def tinty_palette() -> tuple[str, dict[str, str]] | None:
+    """The scheme `tinty apply` last set, as ("base16-gruvbox-dark-hard", {"00": "#1d2021", ...}); None without tinty."""
+    try:
+        name = (TINTY / "current_scheme").read_text().strip()
+        system, slug = name.split("-", 1)
+        text = next(p for p in (TINTY / "custom-schemes" / system / f"{slug}.yaml",
+                                TINTY / "repos/schemes" / system / f"{slug}.yaml") if p.exists()).read_text()
+    except (OSError, ValueError, StopIteration):
+        return None
+    c = {k.upper(): f"#{v}" for k, v in re.findall(r"base([0-9A-Fa-f]{2}):\s*['\"]?#?([0-9a-fA-F]{6})", text)}
+    return (name, c) if all(f"0{d}" in c for d in "0123456789ABCDEF") else None
+
+
+def _rgb(h: str) -> tuple[int, int, int]:
+    return int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16)
 
 
 class VimList(OptionList):
@@ -82,7 +106,8 @@ class Base(Screen):
 
 class CoursesScreen(Base):
     sections: list = []
-    released: dict = {}  # section index → "Today 15:00", filled in by latest()
+    released: dict = {}  # section index → (newest ready lecture, "Today 15:00"), filled in by latest()
+    timeline: list = []  # (section, lecture row) from TIMELINE_DAYS back to TIMELINE_DAYS ahead, oldest first
 
     def on_mount(self):
         self.title = "Courses"
@@ -104,61 +129,96 @@ class CoursesScreen(Base):
 
     def show(self, enr: dict):
         self.sections = model.order(model.current_sections(enr, date.today()), store.load()["opened"])
-        self.released = {}
-        self.fill([self.row(s, "") for s in self.sections])
+        self.released, self.timeline = {}, []
+        self.fill([self.row(s, None) for s in self.sections])
         self.latest()
         if not self.app.prefetched:  # CoursesScreen has no 30s refresh; this guard is just a safety net
             self.app.prefetched = True
             self.app.prefetch(enr)
 
-    def row(self, s: dict, released: str, cur: bool = False) -> Table:
+    def row(self, s: dict, released: tuple | None, watched: dict | None = None, cur: bool = False) -> Table:
         t = Table.grid(expand=True)
         t.add_column(no_wrap=True, overflow="ellipsis")
         t.add_column(justify="right", no_wrap=True)
-        t.add_row(f"{s['courseCode']:<9} {s['courseName']}", Text(released, style=WHITE if cur else "dim"))
+        when = Text(released[1] if released else "", style=WHITE if cur else "dim")
+        if released and (watched or {}).get(f"{s['courseCode']}-{released[0]['date']}-{released[0]['label']}",
+                                            {}).get("full"):
+            when = Text.assemble(("✓ ", "green"), when)  # the newest lecture has been watched
+        t.add_row(f"{s['courseCode']:<9} {s['courseName']}", when)
+        return t
+
+    def timeline_row(self, s: dict, r: dict, watched: dict, cur: bool = False) -> Text:
+        course, now = s["courseCode"], datetime.now().astimezone()
+        w = watched.get(f"{course}-{r['date']}-{r['label']}")
+        if w and w.get("full"):
+            st = ("● watched", "blue")
+        elif worker.lecture_files(course, r):
+            st = ("✓ downloaded", "green")
+        else:
+            st = STATUS[r["status"]]
+        muted = WHITE if cur else GREY
+        t = Text(f"{model.when(model.start(r).astimezone(), now):<16} {course:<9} {model.short_label(r['label']):<6}  ",
+                 style=muted if r["status"] == "upcoming" else "")
+        t.append(st[0], style=muted if r["status"] == "upcoming" else st[1])
         return t
 
     @work(thread=True, exclusive=True, exit_on_error=False)
     def latest(self):
-        """Fill in when each course's newest recording was released; quietly skip failures."""
+        """Fetch every course's lectures for its newest-release time and the timeline; quietly skip failures."""
         wk, now = get_current_worker(), datetime.now(timezone.utc)
         for i, s in enumerate(self.sections):
             if wk.is_cancelled:
                 return
             try:
                 syl = self.app.client.get_json(f"/section/{s['sectionId']}/syllabus")
-                t = model.latest_released(model.lessons(syl, s["sectionName"], now))
+                rows = model.collapse(model.lessons(syl, s["sectionName"], now), lambda r: r["status"] == "ready")
             except Exception:
                 continue
-            if t:
-                self.app.call_from_thread(self.set_released, i, model.when(t.astimezone(), now.astimezone()))
+            self.app.call_from_thread(self.add_course, i, rows, now)
 
-    def set_released(self, i: int, text: str):
-        self.released[i] = text
+    def add_course(self, i: int, rows: list, now: datetime):
+        s = self.sections[i]
+        if newest := next((r for r in rows if r["status"] == "ready"), None):  # rows are newest-first
+            self.released[i] = (newest, model.when(model.start(newest).astimezone(), now.astimezone()))
+        self.timeline = sorted(self.timeline + [(s, r) for r in model.timeline(rows, now, TIMELINE_DAYS)],
+                               key=lambda x: model.start(x[1]))
         self.render_rows()
 
     def render_rows(self):
-        ol = self.query_one(VimList)
-        for i, s in enumerate(self.sections):
-            ol.replace_option_prompt_at_index(i, self.row(s, self.released.get(i, ""), i == ol.highlighted))
+        ol, watched = self.query_one(VimList), store.load().get("watched", {})
+        cur, n = ol.highlighted, len(self.sections)
+        prompts = [self.row(s, self.released.get(i), watched, i == cur) for i, s in enumerate(self.sections)]
+        if self.timeline:
+            prompts.append(Text("Timeline", style="bold"))
+            prompts += [self.timeline_row(s, r, watched, i == cur)
+                        for i, (s, r) in enumerate(self.timeline, n + 1)]
+        if ol.option_count == len(prompts):
+            for i, p in enumerate(prompts):
+                ol.replace_option_prompt_at_index(i, p)
+            return
+        ol.clear_options()
+        ol.add_options(Option(p, disabled=i == n) for i, p in enumerate(prompts))  # the heading isn't selectable
+        ol.highlighted = cur if cur is not None and cur < len(prompts) else 0
 
     def on_option_list_option_highlighted(self, ev):
         self.render_rows()  # the released time turns white on the cursor row
 
     def on_option_list_option_selected(self, ev):
-        s = self.sections[ev.option_index]
+        i, n = ev.option_index, len(self.sections)
+        s, r = (self.sections[i], None) if i < n else self.timeline[i - n - 1]
         with store.edit() as st:
             st["opened"][s["sectionId"]] = time.time()
-        self.app.push_screen(LecturesScreen(s))
+        self.app.push_screen(LecturesScreen(s, r and r["id"]))  # a timeline row opens with its lecture selected
 
 
 class LecturesScreen(Base):
     BINDINGS = [Binding("d", "queue(False)", "Download"), Binding("o", "queue(True)", "Download+open"),
                 Binding("x", "delete", "Delete")]
 
-    def __init__(self, section: dict):
+    def __init__(self, section: dict, jump_to: str | None = None):
         super().__init__()
         self.section, self.course, self.rows, self.idle = section, section["courseCode"], [], set()
+        self.jump_to = jump_to  # lecture id to put the cursor on once the rows arrive
 
     def on_mount(self):
         self.title = self.course
@@ -204,30 +264,34 @@ class LecturesScreen(Base):
     def set_rows(self, rows: list, idle: set = frozenset()):
         self.rows, self.idle = rows, idle
         self.render_rows()
+        if self.jump_to and (i := next((i for i, r in enumerate(rows) if r["id"] == self.jump_to), None)) is not None:
+            self.query_one(VimList).highlighted = i
+        self.jump_to = None
 
     def files(self, r: dict) -> list:
         return worker.lecture_files(self.course, r)
 
     def row_text(self, r: dict, q: dict | None, w: dict | None = None, week: int = 0, width: int = 0,
                  cur: bool = False) -> Text:
+        files = self.files(r)
         if q and q["state"] == "downloading":
             st = (f"↓ {q.get('progress', 0):.0%}", "cyan")
         elif q and q["state"] == "failed":
             st = (f"✗ {q.get('error', 'failed')}", "red")
         elif q and q["state"] == "waiting":
             st = ("⌛ queued", "yellow")
-        elif w and w.get("full"):
-            st = ("● watched", "blue")
-        elif w:
-            st = ("◐ started", "blue")
-        elif self.files(r):
+        elif w and files:
+            st = ("● watched" if w.get("full") else "◐ started", "blue")
+        elif w:  # deleted since: styled like ready, as it can simply be downloaded again
+            st = ("watched" if w.get("full") else "started", STATUS["ready"][1])
+        elif files:
             st = ("✓ downloaded", "green")
         else:
             st = STATUS["idle" if r["id"] in self.idle else r["status"]]
         grey = r["status"] == "upcoming" or r["id"] in self.idle
         muted = WHITE if cur else GREY
-        dmy = "-".join(reversed(r["date"].split("-")))  # stored as yyyy-mm-dd (file names sort by it)
-        t = Text(f"{dmy}  {model.short_label(r['label']):<6}  ", style=muted if grey else "")
+        day = model.day(r["date"], date.today())  # stored as yyyy-mm-dd (file names sort by it)
+        t = Text(f"{day:<9}  {model.short_label(r['label']):<6}  ", style=muted if grey else "")
         t.append(f"{st[0]:<16}", style=muted if grey else st[1])
         # names repeat "<section>-<label>-" and are mostly identical across lectures, so show only the rest, dimmed
         title = r["name"].removeprefix(f"{self.section['sectionName']}-").removeprefix(f"{r['label']}-")
@@ -499,6 +563,8 @@ class EchoApp(App):
         self.client = api.Client()
 
     def on_mount(self):
+        self.follow_tinty()
+        self.set_interval(2, self.follow_tinty)  # `tinty apply` while running recolours the app too
         player.cleanup()  # auto-delete watched/stale lectures whose time is up
         if any(q["state"] in ("waiting", "downloading") for q in store.load()["queue"]):
             worker.spawn()
@@ -507,6 +573,33 @@ class EchoApp(App):
     def get_system_commands(self, screen):
         yield from super().get_system_commands(screen)
         yield SystemCommand("Todo", "Note a feature or fix for later", lambda: self.push_screen(TodoScreen()))
+
+    _tinty = None  # mtime of tinty's current_scheme when it was last applied
+
+    def follow_tinty(self):
+        """Use the base16/base24 scheme tinty last applied: Textual theme, ANSI colours and the row colours."""
+        global BAND, GREY, WHITE
+        try:
+            m = (TINTY / "current_scheme").stat().st_mtime
+        except OSError:
+            return
+        if m == self._tinty or not (p := tinty_palette()):
+            return
+        self._tinty, (name, c) = m, p
+        BAND, GREY, WHITE = c["01"], c["03"], c["07"]
+        # tinted-shell's ANSI mapping; base24 has its own brights, base16 reuses the normal colours
+        normal = [c[k] for k in ("00", "08", "0B", "0A", "0D", "0E", "0C", "05")]
+        bright = [c["03"]] + [c.get(b, c[k]) for k, b in (("08", "12"), ("0B", "14"), ("0A", "13"),
+                                                          ("0D", "16"), ("0E", "17"), ("0C", "15"))] + [c["07"]]
+        self.ansi_theme_dark = self.ansi_theme_light = TerminalTheme(
+            _rgb(c["00"]), _rgb(c["05"]), [_rgb(x) for x in normal], [_rgb(x) for x in bright])
+        self.register_theme(Theme(
+            name=name, primary=c["0D"], secondary=c["0E"], accent=c["09"], warning=c["0A"], error=c["08"],
+            success=c["0B"], foreground=c["05"], background=c["00"], surface=c["01"], panel=c["02"],
+            dark=sum(_rgb(c["00"])) < 384,
+            # cursor row = the scheme's selection colour, so WHITE (base07) text on it stays readable
+            variables={"block-cursor-background": c["02"], "block-cursor-foreground": c["07"]}))
+        self.theme = name
 
     def go_offline(self):
         self.notify("offline — showing downloads")

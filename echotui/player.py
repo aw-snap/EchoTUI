@@ -110,8 +110,21 @@ def _crop(ffmpeg_stderr: str) -> str | None:
 def pip(main: Path, low: Path | None = None):
     """Play main (with a synced, muted, cropped low partner if given), record how far it got, then
     stay around until its auto-delete time and run cleanup."""
+    key, pos, dur = lecture_key(main), None, None
     tmp = tempfile.mkdtemp()
     a, b = f"{tmp}/a", f"{tmp}/b"
+    with store.edit() as s:  # check and claim under one lock: a second open would run a second live whisper
+        w = s.setdefault("watched", {}).setdefault(key, {})
+        if w.get("pid") and _alive(w["pid"]):
+            shutil.rmtree(tmp, ignore_errors=True)
+            return  # already open
+        full = subprocess.Popen(
+            ["mpv", "--script-opts=autocaption-auto=yes", f"--input-ipc-server={a}", str(main)],
+            start_new_session=True, **_DEVNULL)
+        w.update(pid=full.pid, last=time.time())
+    _pids().mkdir(parents=True, exist_ok=True, mode=0o700)
+    pidfile = _pids() / str(full.pid)
+    pidfile.touch()
     if low:
         try:
             detect = subprocess.run(
@@ -125,16 +138,6 @@ def pip(main: Path, low: Path | None = None):
             low_cmd.append(f"--video-crop={crop}")
         low_cmd += ["--autofit=560x560", str(low)]
         subprocess.Popen(low_cmd, start_new_session=True, **_DEVNULL)
-
-    full = subprocess.Popen(
-        ["mpv", "--script-opts=autocaption-auto=yes", f"--input-ipc-server={a}", str(main)],
-        start_new_session=True, **_DEVNULL)
-
-    key, pos, dur = lecture_key(main), None, None
-    _record(key, pid=full.pid, last=time.time())
-    _pids().mkdir(parents=True, exist_ok=True, mode=0o700)
-    pidfile = _pids() / str(full.pid)
-    pidfile.touch()
     try:
         while _alive(full.pid):
             time.sleep(0.5)

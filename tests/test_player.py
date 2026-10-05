@@ -162,3 +162,13 @@ def test_play_starts_the_helper_from_home(monkeypatch, tmp_path):
     f.touch()
     player.play(f)
     assert seen["cwd"] == Path.home() and seen["cmd"][-2:] == ["pip", str(f)]
+
+
+def test_pip_does_not_open_a_lecture_that_is_already_open(monkeypatch, tmp_path):
+    with store.edit() as s:
+        s["watched"] = {"C-2026-09-28-LecA": {"pid": 4242}}
+    monkeypatch.setattr(player, "_alive", lambda pid, name="mpv": pid == 4242)
+    started = []
+    monkeypatch.setattr(player.subprocess, "Popen", lambda cmd, **kw: started.append(cmd))
+    player.pip(tmp_path / "C-2026-09-28-LecA-s1-full.mp4")
+    assert started == []  # a second mpv would start a second live whisper on the same video
