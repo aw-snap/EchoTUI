@@ -32,7 +32,7 @@ BAND = "#303030"  # background of every other week, so a week's lectures read as
 GREY = "#626262"  # upcoming lectures and ones stuck on a lectern idle screen
 WHITE = "#ffffff"  # grey/dim text on the cursor row: grey on the blue highlight is hard to read
 RECENT_DAYS = 14  # how far back the launch prefetch looks for lectures to grab frames for
-TIMELINE_DAYS = 7  # the courses page timeline shows lectures this many days either side of now
+TIMELINE_DAYS = 3  # the courses page timeline goes this many days back; scrolling past its end adds as many again
 _REPO = Path(__file__).parents[1]  # ctrl+p → Todo appends to the repo's TODO.md in a source checkout, else DATA
 TODO = (_REPO if (_REPO / "pyproject.toml").exists() else store.DATA) / "TODO.md"
 TINTY = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "tinted-theming/tinty"
@@ -106,8 +106,10 @@ class Base(Screen):
 
 class CoursesScreen(Base):
     sections: list = []
-    released: dict = {}  # section index → (newest ready lecture, "Today 15:00"), filled in by latest()
-    timeline: list = []  # (section, lecture row) from TIMELINE_DAYS back to TIMELINE_DAYS ahead, oldest first
+    released: dict = {}  # section index → (newest ready lecture, "Today 15:00", lecture later today?)
+    lectures: dict = {}  # lecture id → (section, row), every course's fetched lectures
+    timeline: list = []  # (section, row) shown below the courses, newest first
+    days = TIMELINE_DAYS  # how far back the timeline currently goes
 
     def on_mount(self):
         self.title = "Courses"
@@ -129,7 +131,7 @@ class CoursesScreen(Base):
 
     def show(self, enr: dict):
         self.sections = model.order(model.current_sections(enr, date.today()), store.load()["opened"])
-        self.released, self.timeline = {}, []
+        self.released, self.lectures, self.timeline, self.days = {}, {}, [], TIMELINE_DAYS
         self.fill([self.row(s, None) for s in self.sections])
         self.latest()
         if not self.app.prefetched:  # CoursesScreen has no 30s refresh; this guard is just a safety net
@@ -141,9 +143,9 @@ class CoursesScreen(Base):
         t.add_column(no_wrap=True, overflow="ellipsis")
         t.add_column(justify="right", no_wrap=True)
         when = Text(released[1] if released else "", style=WHITE if cur else "dim")
-        if released and (watched or {}).get(f"{s['courseCode']}-{released[0]['date']}-{released[0]['label']}",
-                                            {}).get("full"):
-            when = Text.assemble(("✓ ", "green"), when)  # the newest lecture has been watched
+        key = released and f"{s['courseCode']}-{released[0]['date']}-{released[0]['label']}"
+        if released and not released[2] and (watched or {}).get(key, {}).get("full"):
+            when = Text.assemble(("✓ ", "green"), when)  # newest lecture watched, and none still to come today
         t.add_row(f"{s['courseCode']:<9} {s['courseName']}", when)
         return t
 
@@ -179,9 +181,10 @@ class CoursesScreen(Base):
     def add_course(self, i: int, rows: list, now: datetime):
         s = self.sections[i]
         if newest := next((r for r in rows if r["status"] == "ready"), None):  # rows are newest-first
-            self.released[i] = (newest, model.when(model.start(newest).astimezone(), now.astimezone()))
-        self.timeline = sorted(self.timeline + [(s, r) for r in model.timeline(rows, now, TIMELINE_DAYS)],
-                               key=lambda x: model.start(x[1]))
+            self.released[i] = (newest, model.when(model.start(newest).astimezone(), now.astimezone()),
+                                model.later_today(rows, now.astimezone()))
+        self.lectures |= {r["id"]: (s, r) for r in rows}
+        self.refilter()
         self.render_rows()
 
     def render_rows(self):
@@ -189,23 +192,34 @@ class CoursesScreen(Base):
         cur, n = ol.highlighted, len(self.sections)
         prompts = [self.row(s, self.released.get(i), watched, i == cur) for i, s in enumerate(self.sections)]
         if self.timeline:
-            prompts.append(Text("Timeline", style="bold"))
+            prompts += ["", Text("Timeline", style="bold")]  # a blank line sets it apart from the courses
             prompts += [self.timeline_row(s, r, watched, i == cur)
-                        for i, (s, r) in enumerate(self.timeline, n + 1)]
+                        for i, (s, r) in enumerate(self.timeline, n + 2)]
         if ol.option_count == len(prompts):
             for i, p in enumerate(prompts):
                 ol.replace_option_prompt_at_index(i, p)
             return
         ol.clear_options()
-        ol.add_options(Option(p, disabled=i == n) for i, p in enumerate(prompts))  # the heading isn't selectable
+        ol.add_options(Option(p, disabled=i in (n, n + 1)) for i, p in enumerate(prompts))  # gap and heading
         ol.highlighted = cur if cur is not None and cur < len(prompts) else 0
 
+    def refilter(self):
+        rows = [r for _, r in self.lectures.values()]
+        self.timeline = [self.lectures[r["id"]] for r in model.timeline(rows, date.today(), self.days)]
+
     def on_option_list_option_highlighted(self, ev):
+        ol = self.query_one(VimList)
+        if self.timeline and ev.option_index == ol.option_count - 1:  # scrolled to the end: go further back
+            oldest = min((date.fromisoformat(r["date"]) for _, r in self.lectures.values()), default=date.today())
+            shown = len(self.timeline)
+            while len(self.timeline) == shown and date.today() - timedelta(days=self.days) > oldest:
+                self.days += TIMELINE_DAYS  # skip empty stretches (weekends, breaks) in one go
+                self.refilter()
         self.render_rows()  # the released time turns white on the cursor row
 
     def on_option_list_option_selected(self, ev):
         i, n = ev.option_index, len(self.sections)
-        s, r = (self.sections[i], None) if i < n else self.timeline[i - n - 1]
+        s, r = (self.sections[i], None) if i < n else self.timeline[i - n - 2]
         with store.edit() as st:
             st["opened"][s["sectionId"]] = time.time()
         self.app.push_screen(LecturesScreen(s, r and r["id"]))  # a timeline row opens with its lecture selected

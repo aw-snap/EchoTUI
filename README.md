@@ -13,7 +13,8 @@ with whisper.cpp while you watch.
 - Watched lectures are deleted automatically: 1 h after you finish one, 4 h after a partial watch,
   or 2 weeks after download if you never open it.
 - The courses page ticks courses whose newest lecture you've watched, and lists a timeline of every
-  course's lectures from the past week and the week ahead. Pressing `enter` on one jumps straight to it.
+  course's lectures, newest first: today plus the 3 days before it, with older ones loading as you scroll
+  down. Pressing `enter` on one jumps straight to it.
 - If you use [tinty](https://github.com/tinted-theming/tinty), EchoTUI uses your current base16/base24
   scheme and switches with it when you `tinty apply`.
 

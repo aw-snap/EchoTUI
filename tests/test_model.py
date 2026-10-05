@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from echotui import model
 
@@ -121,13 +121,24 @@ def test_when():
     assert model.when(datetime(2026, 9, 14, 9, 0), now) == "14-09-2026 09:00"
 
 
-def test_timeline_keeps_the_near_week_oldest_first():
-    now = datetime(2026, 9, 28, 3, tzinfo=timezone.utc)
-    rows = [{"id": "far", "start_utc": "2026-10-09T02:00:00.000Z"},
-            {"id": "next", "start_utc": "2026-09-29T02:00:00.000Z"},
-            {"id": "today", "start_utc": "2026-09-28T02:00:00.000Z"},
-            {"id": "old", "start_utc": "2026-09-14T02:00:00.000Z"}]
-    assert [r["id"] for r in model.timeline(rows, now, 7)] == ["today", "next"]
+def test_timeline_is_newest_first_and_stops_at_the_end_of_today():
+    rows = [{"id": "tomorrow", "date": "2026-09-29", "start_utc": "2026-09-29T02:00:00.000Z"},
+            {"id": "tonight", "date": "2026-09-28", "start_utc": "2026-09-28T08:00:00.000Z"},
+            {"id": "today", "date": "2026-09-28", "start_utc": "2026-09-28T02:00:00.000Z"},
+            {"id": "3 days", "date": "2026-09-25", "start_utc": "2026-09-25T02:00:00.000Z"},
+            {"id": "4 days", "date": "2026-09-24", "start_utc": "2026-09-24T02:00:00.000Z"}]
+    today = date(2026, 9, 28)
+    assert [r["id"] for r in model.timeline(rows, today, 3)] == ["tonight", "today", "3 days"]
+    assert [r["id"] for r in model.timeline(rows, today, 6)][-1] == "4 days"
+
+
+def test_later_today_uses_the_local_date():
+    nz = timezone(timedelta(hours=13))
+    now = datetime(2026, 9, 28, 10, tzinfo=nz)
+    at = lambda h: {"start_utc": (datetime(2026, 9, 28, h, tzinfo=nz)).astimezone(timezone.utc).isoformat()}  # noqa: E731
+    assert model.later_today([at(15)], now)
+    assert not model.later_today([at(9)], now)  # already started
+    assert not model.later_today([{"start_utc": "2026-09-28T11:30:00+00:00"}], now)  # 00:30 tomorrow local
 
 
 def test_default_choice_skips_login_screen_feeds():

@@ -270,38 +270,41 @@ def test_courses_show_last_released_right_aligned_without_lesson_count():
 
 def test_courses_tick_a_watched_newest_lecture_and_list_a_timeline():
     now = datetime.now(timezone.utc)
-    iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%S.000Z")  # noqa: E731
-    syl = _syllabus_row(iso(now - timedelta(hours=1)))
-    nxt = _syllabus_row(iso(now + timedelta(days=1)))[0]
+
+    def lecture(lid, label, t):
+        x = _syllabus_row(t.strftime("%Y-%m-%dT%H:%M:%S.000Z"))[0]
+        x["lesson"]["lesson"].update(id=lid, name=f"COSC264-26S2-{label}-x",
+                                     timing={"start": t.astimezone().strftime("%Y-%m-%dT%H:%M:%S.000")})
+        return x
+    a = lecture("L1", "LecA", now - timedelta(minutes=1))
+    nxt = lecture("L2", "LecB", now + timedelta(days=1))
     nxt["lesson"]["isFuture"], nxt["lesson"]["medias"] = True, []
-    nxt["lesson"]["lesson"].update(id="L2", name="COSC264-26S2-LecB-Next", timing={"start": "2099-01-01T15:00"})
-    old = _syllabus_row(iso(now - timedelta(days=30)))[0]
-    old["lesson"]["lesson"].update(id="L0", name="COSC264-26S2-LecZ-Old")
-    syl += [nxt, old]
+    old = lecture("L0", "LecZ", now - timedelta(days=30))
     enr = [{"termsById": {"t": {"name": "FY", "isActive": True}},
             "userSections": [{"sectionId": "s1", "sectionName": "COSC264-26S2", "courseCode": "COSC264",
                               "courseName": "Networks", "termId": "t"}]}]
     with store.edit() as s:
-        s["watched"] = {"COSC264-2026-09-28-LecA": {"last": 1, "full": True}}
+        s["watched"] = {f"COSC264-{(now - timedelta(minutes=1)).astimezone():%Y-%m-%d}-LecA": {"last": 1, "full": True}}
 
     class Client(_FakePrefetchClient):
         def get_json(self, path):
             return enr if path == "/user/enrollments" else super().get_json(path)
 
     async def go():
-        app = CoursesApp(Client(syl))
+        app = CoursesApp(Client([a, nxt, old]))
         async with app.run_test(size=(70, 10)) as pilot:
             for _ in range(20):
                 await pilot.pause(0.05)
             ol = app.screen.query_one(tui.VimList)
             lines = [ol.render_line(i).text for i in range(4)]
             assert "✓ " in lines[0]  # newest released lecture (LecA) is watched
-            assert lines[1].strip() == "Timeline"
-            assert "LecA" in lines[2] and "● watched" in lines[2]
-            assert "LecB" in lines[3] and "upcoming" in lines[3] and "Tomorrow" in lines[3]
-            assert ol.option_count == 4  # the 30-day-old lecture is outside the timeline
-            await pilot.press("j")  # skips the heading
-            assert ol.highlighted == 2
+            assert lines[1].strip() == "" and lines[2].strip() == "Timeline"  # a gap above the timeline
+            assert "LecA" in lines[3] and "● watched" in lines[3]
+            assert ol.option_count == 4  # tomorrow's LecB and the month-old LecZ are left out
+            await pilot.press("j")  # skips the gap and heading, onto the last row...
+            await pilot.pause()
+            assert ol.highlighted == 3
+            assert ol.option_count == 5 and "LecZ" in ol.render_line(4).text  # ...which loads older lectures
             await pilot.press("enter")
             for _ in range(10):
                 await pilot.pause(0.05)

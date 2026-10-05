@@ -119,10 +119,15 @@ def start(r: dict) -> datetime:
     return datetime.fromisoformat(r["start_utc"])
 
 
-def timeline(rows: list[dict], now: datetime, days: int) -> list[dict]:
-    """Lectures from `days` ago to `days` ahead, oldest first."""
-    near = [r for r in rows if abs(start(r) - now) <= timedelta(days=days)]
-    return sorted(near, key=start)
+def timeline(rows: list[dict], today: date, days: int) -> list[dict]:
+    """Lectures from `days` days before today up to the end of today (no later), newest first."""
+    near = [r for r in rows if today - timedelta(days=days) <= date.fromisoformat(r["date"]) <= today]
+    return sorted(near, key=start, reverse=True)
+
+
+def later_today(rows: list[dict], now: datetime) -> bool:
+    """Whether a lecture starts after now but still on now's (local) date."""
+    return any(start(r) > now and start(r).astimezone(now.tzinfo).date() == now.date() for r in rows)
 
 
 def when(t: datetime, now: datetime) -> str:
