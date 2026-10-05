@@ -150,7 +150,7 @@ class CoursesScreen(Base):
         return t
 
     def timeline_row(self, s: dict, r: dict, watched: dict, cur: bool = False) -> Text:
-        course, now = s["courseCode"], datetime.now().astimezone()
+        course = s["courseCode"]
         w = watched.get(f"{course}-{r['date']}-{r['label']}")
         if w and w.get("full"):
             st = ("● watched", "blue")
@@ -159,7 +159,8 @@ class CoursesScreen(Base):
         else:
             st = STATUS[r["status"]]
         muted = WHITE if cur else GREY
-        t = Text(f"{model.when(model.start(r).astimezone(), now):<16} {course:<9} {model.short_label(r['label']):<6}  ",
+        day, at = model.day(r["date"], date.today()), f"{model.start(r).astimezone():%H:%M}"
+        t = Text(f"{day:<9}  {at}  {course:<9} {model.short_label(r['label']):<6}  ",
                  style=muted if r["status"] == "upcoming" else "")
         t.append(st[0], style=muted if r["status"] == "upcoming" else st[1])
         return t

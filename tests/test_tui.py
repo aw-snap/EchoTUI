@@ -582,3 +582,16 @@ def test_app_follows_the_tinty_scheme(tmp_path, monkeypatch):
             assert app.ansi_theme.ansi_colors[4].hex == "#83a598"  # ANSI blue = base0D
             assert (tui.BAND, tui.GREY, tui.WHITE) == ("#3c3836", "#665c54", "#fbf1c7")
     asyncio.run(go())
+
+
+def test_timeline_rows_put_the_time_in_its_own_column():
+    screen = tui.CoursesScreen()
+    s = {"courseCode": "COSC264"}
+    t = datetime.now().astimezone().replace(hour=9, minute=5)
+    rows = [{"id": i, "date": f"{d:%Y-%m-%d}", "label": "LecA", "status": "ready",
+             "start_utc": d.astimezone(timezone.utc).isoformat()}
+            for i, d in enumerate((t, t - timedelta(days=1), t - timedelta(days=3)))]
+    lines = [screen.timeline_row(s, r, {}).plain for r in rows]
+    assert lines[0].startswith("Today      09:05  COSC264")
+    assert lines[1].startswith("Yesterday  09:05  COSC264")
+    assert {line.index("09:05") for line in lines} == {11}  # same column whatever the day text
