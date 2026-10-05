@@ -579,7 +579,7 @@ class EchoApp(App):
 
     def on_mount(self):
         self.follow_tinty()
-        self.set_interval(2, self.follow_tinty)  # `tinty apply` while running recolours the app too
+        self.set_interval(0.2, self.follow_tinty)  # `tinty apply` recolours the app too; the check is one stat()
         player.cleanup()  # auto-delete watched/stale lectures whose time is up
         if any(q["state"] in ("waiting", "downloading") for q in store.load()["queue"]):
             worker.spawn()
