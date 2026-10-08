@@ -202,3 +202,15 @@ def test_a_file_is_only_ever_pre_captioned_once_at_a_time(monkeypatch):
             break
         time.sleep(0.01)
     assert calls == ["https://x/a"]
+
+
+def test_requeue_after_download_is_not_held_back_by_the_poll(monkeypatch):
+    monkeypatch.setattr(worker, "notify", lambda m: None)
+    c, tried = FakeClient(syllabus(isAvailable=True), frame_paths=[]), {}
+    store.enqueue(dict(ITEM, feeds={"1": "full"}))
+    worker._process(c, tried, poll=300)
+    for p in worker.lecture_files("COSC264", {"date": "2026-09-28", "label": "LecA"}):
+        p.unlink()  # deleted in the tui while the worker lives on (subtitle pass)
+    store.enqueue(dict(ITEM, feeds={"1": "full"}))
+    worker._process(c, tried, poll=300)
+    assert store.load()["queue"] == [] and len(c.urls) == 2

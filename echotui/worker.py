@@ -125,6 +125,8 @@ def _process(client, tried: dict, poll: float):
         except Exception as e:  # network, 5xx, odd JSON: keep waiting, retry next poll
             store.update(item["lesson"], state="waiting")
             print(f"{item['lesson']}: {e!r}", flush=True)
+        if not any(q["lesson"] == item["lesson"] and q["state"] == "waiting" for q in store.load()["queue"]):
+            tried.pop(item["lesson"])  # done, failed or unqueued: a re-queue must not wait out the poll
 
 
 def run_pausable(cmd: list[str], tick: float = 1.0):
