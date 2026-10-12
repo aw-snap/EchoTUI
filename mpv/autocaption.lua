@@ -8,6 +8,8 @@ options.read_options(opts, "autocaption")
 local is_windows = package.config:sub(1, 1) == "\\"
 local model_path = mp.command_native({ "expand-path", "~~/ggml-small.en.bin" })
 local whisper_cmd = "whisper-cli" -- must be on PATH, or put the full path here
+-- -mc 0: no previous text as context, else one line can repeat for the rest of the lecture
+local whisper_opts = "-mc 0"
 
 local tmp = os.getenv("TEMP") or "/tmp"
 -- per-process names so two mpv windows don't clobber each other's files
@@ -106,12 +108,13 @@ local function run_whisper()
 		-- cmd.exe mangles quoted paths passed on its command line, so run the redirect from a .bat
 		local bat_path = utils.join_path(tmp, "mpv_whisper.bat")
 		local bat = io.open(bat_path, "w")
-		bat:write(string.format('@"%s" -m "%s" -f "%s" > "%s" 2>&1\r\n', whisper_cmd, model_path, wav_path, log_path))
+		bat:write(string.format('@"%s" %s -m "%s" -f "%s" > "%s" 2>&1\r\n', whisper_cmd, whisper_opts, model_path,
+			wav_path, log_path))
 		bat:close()
 		args = { "cmd", "/c", bat_path }
 	else
-		args = { "sh", "-c", string.format("stdbuf -oL '%s' -m '%s' -f '%s' > '%s' 2>&1", whisper_cmd, model_path,
-			wav_path, log_path) }
+		args = { "sh", "-c", string.format("stdbuf -oL '%s' %s -m '%s' -f '%s' > '%s' 2>&1", whisper_cmd, whisper_opts,
+			model_path, wav_path, log_path) }
 	end
 
 	local cmd2 = {
