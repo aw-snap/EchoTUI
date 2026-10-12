@@ -472,9 +472,33 @@ def test_duplicate_recordings_collapse_to_the_non_idle_then_bigger_one():
                 await pilot.pause(0.05)
             return [r["id"] for r in app.screen.rows]
 
-    assert asyncio.run(rows_shown()) == ["L2"]  # biggest recording wins
+    (frames / "m2.size").write_text("0")  # sized while still processing: no files listed yet
+    assert asyncio.run(rows_shown()) == ["L2"]  # biggest recording wins; a cached 0 is asked again
+    store.enqueue({"lesson": "L1", "state": "failed", "error": "feed missing"})
+    assert asyncio.run(rows_shown()) == ["L2"]  # a failed download doesn't pin its copy
     (frames / "m2-1.idle").write_text("idle")
     assert asyncio.run(rows_shown()) == ["L3"]  # an idle-screen duplicate loses to any real one
+
+
+    # opened from a timeline row for L1, a copy this page doesn't show: the cursor lands on the copy it does
+    later = rec(4)
+    later["lesson"]["lesson"]["timing"] = {"start": "2026-09-25T13:00:00.000"}
+    later["lesson"]["startTimeUTC"] = "2026-09-25T01:00:00.000Z"
+    jump = model.lessons([rec(1)], "COSC264-26S2", datetime.now(timezone.utc))[0]
+
+    class JumpApp(App):  # not LecturesApp: its on_mount would also run and push a screen on top
+        def on_mount(self):
+            self.push_screen(tui.LecturesScreen(
+                {"sectionId": "s1", "courseCode": "COSC264", "sectionName": "COSC264-26S2"}, jump))
+
+    async def jumped():
+        app = JumpApp()
+        app.client = Sized([later, rec(1), rec(2), rec(3)])
+        async with app.run_test(size=(90, 10)) as pilot:
+            for _ in range(10):
+                await pilot.pause(0.05)
+            return [r["id"] for r in app.screen.rows], app.screen.query_one(tui.VimList).highlighted
+    assert asyncio.run(jumped()) == (["L4", "L3"], 1)
 
 
 def test_preview_size_is_16_9_and_fits(monkeypatch):
@@ -595,3 +619,10 @@ def test_timeline_rows_put_the_time_in_its_own_column():
     assert lines[0].startswith("Today      09:05  COSC264")
     assert lines[1].startswith("Yesterday  09:05  COSC264")
     assert {line.index("09:05") for line in lines} == {11}  # same column whatever the day text
+
+
+def test_a_ready_copy_beats_a_queued_one_still_processing():
+    rows = [{"id": i, "date": "2026-10-09", "label": "LecC", "name": "n", "status": st, "media": None}
+            for i, st in (("a", "processing"), ("b", "ready"))]
+    store.enqueue({"lesson": "a", "state": "waiting"})
+    assert [r["id"] for r in tui.collapse(rows, set())] == ["b"]

@@ -251,3 +251,11 @@ def test_idle_screen_detects_each_reference_screen_and_caches_the_verdict(tmp_pa
     assert api.idle_screen(other) is False and api.idle_screen(None) is False
     assert api.idle_lecture("m1") is False  # feed 2 has content
     assert api.idle_lecture("m2") is True and api.idle_lecture("nothing") is False
+
+def test_recording_size_asks_again_while_no_files_are_listed():
+    c = api.Client.__new__(api.Client)
+    infos = iter([{}, {"primaryFiles": {"files": [{"label": "Full", "fileSize": 7}, {"label": "Lower", "fileSize": 2}]}}])
+    c.get_json = lambda path: next(infos)
+    assert c.recording_size("m1") == 0  # still processing: download-info lists no files yet
+    assert c.recording_size("m1") == 7
+    assert c.recording_size("m1") == 7  # cached: infos is exhausted, a third fetch would raise

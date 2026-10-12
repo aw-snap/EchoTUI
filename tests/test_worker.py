@@ -1,5 +1,6 @@
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 from echotui import player, store, worker
 
@@ -105,6 +106,23 @@ def test_feeds_dict_matching_no_feed_marks_failed_without_dequeuing(monkeypatch)
     q = store.load()["queue"][0]
     assert q["state"] == "failed" and q["error"] == "feed missing"
     assert sent == ["COSC264 LecA 28 Sep: feed missing"]
+
+
+def test_ready_lesson_without_files_listed_yet_stays_waiting(monkeypatch):
+    # Echo360 can mark a recording available before download-info lists its files
+    sent = []
+    monkeypatch.setattr(worker, "notify", sent.append)
+    item = {**ITEM, "feeds": {"1": "full"}}
+    store.enqueue(dict(item))
+    syl = syllabus(isAvailable=True)
+    syl[0]["lesson"]["startTimeUTC"] = datetime.now(timezone.utc).isoformat()
+    c = FakeClient(syl)
+    c.get_json = lambda path: c.syl if path.endswith("/syllabus") else {}
+    worker.step(c, item)
+    assert store.load()["queue"][0]["state"] == "waiting" and sent == [] and c.urls == []
+    syl[0]["lesson"]["startTimeUTC"] = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    worker.step(c, item)  # still none a day on: not coming
+    assert store.load()["queue"][0]["error"] == "feed missing" and len(sent) == 1
 
 
 def test_processing_lesson_stays_waiting():

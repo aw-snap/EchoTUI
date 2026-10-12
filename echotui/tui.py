@@ -38,6 +38,18 @@ TODO = (_REPO if (_REPO / "pyproject.toml").exists() else store.DATA) / "TODO.md
 TINTY = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "tinted-theming/tinty"
 
 
+def idle_ids(rows: list[dict]) -> set:
+    return {r["id"] for r in rows if r["media"] and api.idle_lecture(r["media"])}
+
+
+def collapse(rows: list[dict], idle: set) -> list[dict]:
+    """One row per duplicated lecture: prefer ready, then the one queued, then not idle, then the bigger
+    recording. A failed download doesn't count: it would pin the copy that just failed."""
+    active = {q["lesson"] for q in store.load()["queue"] if q["state"] != "failed"}
+    return model.collapse(rows, lambda r: (r["status"] == "ready", r["id"] in active, r["id"] not in idle,
+                                           api.cached_size(r["media"]) if r["media"] else 0))
+
+
 def tinty_palette() -> tuple[str, dict[str, str]] | None:
     """The scheme `tinty apply` last set, as ("base16-gruvbox-dark-hard", {"00": "#1d2021", ...}); None without tinty."""
     try:
@@ -174,7 +186,8 @@ class CoursesScreen(Base):
                 return
             try:
                 syl = self.app.client.get_json(f"/section/{s['sectionId']}/syllabus")
-                rows = model.collapse(model.lessons(syl, s["sectionName"], now), lambda r: r["status"] == "ready")
+                rows = model.lessons(syl, s["sectionName"], now)
+                rows = collapse(rows, idle_ids(rows))  # ranked like the lectures page, minus sizes not fetched yet
             except Exception:
                 continue
             self.app.call_from_thread(self.add_course, i, rows, now)
@@ -223,17 +236,17 @@ class CoursesScreen(Base):
         s, r = (self.sections[i], None) if i < n else self.timeline[i - n - 2]
         with store.edit() as st:
             st["opened"][s["sectionId"]] = time.time()
-        self.app.push_screen(LecturesScreen(s, r and r["id"]))  # a timeline row opens with its lecture selected
+        self.app.push_screen(LecturesScreen(s, r))  # a timeline row opens with its lecture selected
 
 
 class LecturesScreen(Base):
     BINDINGS = [Binding("d", "queue(False)", "Download"), Binding("o", "queue(True)", "Download+open"),
                 Binding("x", "delete", "Delete")]
 
-    def __init__(self, section: dict, jump_to: str | None = None):
+    def __init__(self, section: dict, jump_to: dict | None = None):
         super().__init__()
         self.section, self.course, self.rows, self.idle = section, section["courseCode"], [], set()
-        self.jump_to = jump_to  # lecture id to put the cursor on once the rows arrive
+        self.jump_to = jump_to  # lecture to put the cursor on once the rows arrive
 
     def on_mount(self):
         self.title = self.course
@@ -252,12 +265,12 @@ class LecturesScreen(Base):
         except Exception as e:
             return self.error(f"refresh failed: {e}")
         rows = model.lessons(syl, self.section["sectionName"], datetime.now(timezone.utc))
-        idle = {r["id"] for r in rows if r["media"] and api.idle_lecture(r["media"])}
+        idle = idle_ids(rows)
         self.app.call_from_thread(self.set_rows, *self.best(rows, idle))
         # rank duplicate recordings by size (one download-info each, cached), then re-pick
         slots = [(r["date"], r["label"], r["name"]) for r in rows]
-        dups = [r for r, k in zip(rows, slots) if r["media"] and slots.count(k) > 1
-                and not (store.CACHE / "frames" / f"{r['media']}.size").exists()]
+        dups = [r for r, k in zip(rows, slots) if r["status"] == "ready" and slots.count(k) > 1
+                and not api.cached_size(r["media"])]  # only a ready copy lists files to size
         for r in dups:
             try:
                 self.app.client.recording_size(r["media"])
@@ -267,19 +280,15 @@ class LecturesScreen(Base):
             self.app.call_from_thread(self.set_rows, *self.best(rows, idle))
 
     def best(self, rows: list, idle: set) -> tuple[list, set]:
-        """One row per duplicated lecture: prefer the queued one, then not-idle, then the bigger recording."""
-        queued = {q["lesson"] for q in store.load()["queue"]}
-
-        def size(r):
-            p = store.CACHE / "frames" / f"{r['media']}.size"
-            return int(p.read_text()) if r["media"] and p.exists() else 0
-        rows = model.collapse(rows, lambda r: (r["id"] in queued, r["id"] not in idle, size(r)))
-        return model.visible(rows), idle
+        return model.visible(collapse(rows, idle)), idle
 
     def set_rows(self, rows: list, idle: set = frozenset()):
         self.rows, self.idle = rows, idle
         self.render_rows()
-        if self.jump_to and (i := next((i for i, r in enumerate(rows) if r["id"] == self.jump_to), None)) is not None:
+        # by slot, not id: this page may have picked the other copy of a duplicated lecture
+        slot = self.jump_to and (self.jump_to["date"], self.jump_to["label"], self.jump_to["name"])
+        if slot and (i := next((i for i, r in enumerate(rows) if (r["date"], r["label"], r["name"]) == slot),
+                               None)) is not None:
             self.query_one(VimList).highlighted = i
         self.jump_to = None
 

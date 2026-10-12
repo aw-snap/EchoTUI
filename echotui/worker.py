@@ -7,7 +7,7 @@ import sys
 import tempfile
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import api, model, player, store
@@ -73,8 +73,10 @@ def step(client, item: dict):
         return
     if row["status"] != "ready":
         return
-    store.update(item["lesson"], state="downloading", progress=0)
     feeds = model.feeds(client.get_json(f"/api/ui/library/medias/{row['media']}/download-info"))
+    if not feeds and now - model.start(row) < timedelta(days=1):
+        return  # marked available before its files are listed: wait a day, then fail as feed missing
+    store.update(item["lesson"], state="downloading", progress=0)
     choice = item["feeds"]
     if isinstance(choice, list):  # old tui.py wrote a list like [1, 2]; treat it as "all"
         choice = "all"

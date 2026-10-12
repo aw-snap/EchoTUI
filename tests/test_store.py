@@ -29,3 +29,11 @@ def test_concurrent_edits_do_not_lose_writes():
     for t in threads:
         t.join()
     assert store.load()["n"] == 20
+
+
+def test_enqueue_drops_a_failed_try_at_another_copy_of_the_lecture():
+    slot = {"course": "ENCE260", "date": "2026-10-09", "label": "LecC"}
+    store.enqueue({"lesson": "a", "state": "failed", **slot})
+    store.enqueue({"lesson": "c", "state": "failed", **slot, "label": "LecB"})
+    store.enqueue({"lesson": "b", "state": "waiting", **slot})
+    assert [q["lesson"] for q in store.load()["queue"]] == ["c", "b"]

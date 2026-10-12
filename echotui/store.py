@@ -33,8 +33,12 @@ def edit():
 
 
 def enqueue(item: dict):
+    def slot(q):
+        return q.get("course"), q.get("date"), q.get("label")
     with edit() as s:
-        s["queue"] = [q for q in s["queue"] if q["lesson"] != item["lesson"]] + [item]
+        # also drops a failed try at another copy of the same lecture, which the lecture list no longer shows
+        s["queue"] = [q for q in s["queue"] if q["lesson"] != item["lesson"]
+                      and not (q["state"] == "failed" and slot(q) == slot(item))] + [item]
 
 
 def update(lesson: str, **fields):

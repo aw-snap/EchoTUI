@@ -224,15 +224,16 @@ class Client:
         part.replace(dest)
 
     def recording_size(self, media_id: str) -> int:
-        """Total bytes of the Full files; the bigger of two duplicate recordings is the better one. Cached."""
-        p = store.CACHE / "frames" / f"{media_id}.size"
-        if not p.exists():
+        """Total bytes of the Full files; the bigger of two duplicate recordings is the better one. Cached,
+        except a 0: download-info lists no files while a recording is still processing."""
+        if not (n := cached_size(media_id)):
             info = self.get_json(f"/api/ui/library/medias/{media_id}/download-info")
             n = sum(f.get("fileSize") or 0 for k in ("primaryFiles", "secondaryFiles")
                     for f in (info.get(k) or {}).get("files", []) if f.get("label") == "Full")
+            p = store.CACHE / "frames" / f"{media_id}.size"
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(str(n))
-        return int(p.read_text())
+        return n
 
     def frames(self, media_id: str, lesson_id: str, feeds: list[dict]) -> list[Path | None]:
         return [self._frame(media_id, lesson_id, f) for f in feeds]
@@ -297,6 +298,12 @@ def idle_screen(frame: Path | None) -> bool:
         idle = any((_ssim(frame, ref) or 0) >= SAME_SSIM for ref in IDLE_SCREENS)
         mark.write_text("idle" if idle else "ok")
     return mark.read_text() == "idle"
+
+
+def cached_size(media_id: str) -> int:
+    """Client.recording_size's cached answer; 0 if not asked yet, no files were listed then, or mid-write."""
+    p = store.CACHE / "frames" / f"{media_id}.size"
+    return int(p.read_text() or 0) if p.exists() else 0
 
 
 def idle_lecture(media_id: str) -> bool:
