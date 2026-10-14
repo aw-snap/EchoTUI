@@ -172,3 +172,17 @@ def test_pip_does_not_open_a_lecture_that_is_already_open(monkeypatch, tmp_path)
     monkeypatch.setattr(player.subprocess, "Popen", lambda cmd, **kw: started.append(cmd))
     player.pip(tmp_path / "C-2026-09-28-LecA-s1-full.mp4")
     assert started == []  # a second mpv would start a second live whisper on the same video
+
+
+def test_pip_resumes_where_it_was_closed_unless_watched_fully(monkeypatch, tmp_path):
+    started, popen = [], subprocess.Popen
+    monkeypatch.setattr(player.subprocess, "Popen", lambda cmd, **kw: started.append(cmd) or popen(["true"]))
+    monkeypatch.setattr(player.time, "sleep", lambda s: None)
+    monkeypatch.setattr(player, "cleanup", lambda: None)
+    for full, want in ((False, ["--start=754.2"]), (True, [])):
+        with store.edit() as s:
+            s["watched"] = {"C-2026-09-28-LecA": {"pos": 754.2, "full": full}}
+        player.pip(tmp_path / "C-2026-09-28-LecA-s1-full.mp4")
+        assert [a for a in started.pop() if a.startswith("--start")] == want
+        # closed before the first poll: the old position survives for next time
+        assert store.load()["watched"]["C-2026-09-28-LecA"]["pos"] == 754.2

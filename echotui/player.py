@@ -118,10 +118,13 @@ def pip(main: Path, low: Path | None = None):
         if w.get("pid") and _alive(w["pid"]):
             shutil.rmtree(tmp, ignore_errors=True)
             return  # already open
+        # resume where it was closed last time, unless that counted as fully watched
+        start = [f"--start={w['pos']}"] if w.get("pos") and not w.get("full") else []
         full = subprocess.Popen(
-            ["mpv", "--script-opts=autocaption-auto=yes", f"--input-ipc-server={a}", str(main)],
+            ["mpv", "--script-opts=autocaption-auto=yes", f"--input-ipc-server={a}", *start, str(main)],
             start_new_session=True, **_DEVNULL)
         w.update(pid=full.pid, last=time.time())
+        pos, dur = w.get("pos"), w.get("dur")  # closed before the first poll → keep the old position
     _pids().mkdir(parents=True, exist_ok=True, mode=0o700)
     pidfile = _pids() / str(full.pid)
     pidfile.touch()

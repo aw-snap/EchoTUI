@@ -15,20 +15,53 @@ local tmp = os.getenv("TEMP") or "/tmp"
 -- per-process names so two mpv windows don't clobber each other's files
 local tag = tostring(utils.getpid())
 local log_path = utils.join_path(tmp, "mpv_whisper_" .. tag .. ".log")
-local srt_path = utils.join_path(tmp, "mpv_whisper_" .. tag .. ".srt")
+local tmp_srt = utils.join_path(tmp, "mpv_whisper_" .. tag .. ".srt")
+local srt_path = tmp_srt
 local wav_path = utils.join_path(tmp, "mpv_audio_" .. tag .. ".wav")
 
 local is_processing = false
 local timer = nil
 local last_pos = 0
 local sub_index = 1
-local subs_added = false
-local offset_ms = 0 -- audio before this point was captioned ahead of time (echotui's pre-pass)
-local prefill = "" -- that pre-pass srt, copied into the live file so one track covers the whole video
+local offset_ms = 0 -- audio before this point is already captioned (echotui's pre-pass or an earlier viewing)
+local video = nil -- auto mode: the video whose own .srt srt_path is, appended to rather than replaced
+local added = false
+
+local function to_ms(ts)
+	local h, m, s, f = ts:match("(%d+):(%d+):(%d+)[,.](%d+)")
+	return ((tonumber(h) * 60 + tonumber(m)) * 60 + tonumber(s)) * 1000 + tonumber(f)
+end
+
+-- reload the track showing srt_path, or add it (mpv already loaded a video's own .srt by itself)
+local function show_subs()
+	for _, t in ipairs(mp.get_property_native("track-list")) do
+		if t.type == "sub" and t["external-filename"] == srt_path then
+			mp.commandv("sub-reload", tostring(t.id))
+			return
+		end
+	end
+	if added then
+		mp.commandv("sub-reload") -- mpv names the file differently; add it once, not every poll
+	else
+		mp.commandv("sub-add", srt_path)
+		added = true
+	end
+end
+
+-- carry on from the last caption already in the video's .srt
+local function resume()
+	offset_ms, sub_index = 0, 1
+	local f = io.open(srt_path, "r")
+	if not f then return end
+	for ts in f:read("*a"):gmatch("%-%->%s*([%d:,.]+)") do
+		offset_ms = to_ms(ts)
+		sub_index = sub_index + 1
+	end
+	f:close()
+end
 
 local function shift(ts)
-	local h, m, s, f = ts:match("(%d+):(%d+):(%d+)[,.](%d+)")
-	local t = ((tonumber(h) * 60 + tonumber(m)) * 60 + tonumber(s)) * 1000 + tonumber(f) + offset_ms
+	local t = to_ms(ts) + offset_ms
 	return string.format("%02d:%02d:%02d,%03d", math.floor(t / 3600000), math.floor(t / 60000) % 60,
 		math.floor(t / 1000) % 60, t % 1000)
 end
@@ -42,6 +75,10 @@ local function stop_polling()
 end
 
 local function poll_log()
+	if video and not utils.file_info(video) then
+		stop_polling() -- deleted while open: a recreated .srt would hold only the end of the lecture
+		return
+	end
 	local log_file = io.open(log_path, "r")
 	if not log_file then return end
 
@@ -72,13 +109,7 @@ local function poll_log()
 		if srt_file then
 			srt_file:write(new_subs)
 			srt_file:close()
-
-			-- ONLY call sub-add once the first piece of actual text exists
-			if not subs_added then
-				mp.commandv("sub-add", srt_path)
-				subs_added = true
-			end
-			mp.commandv("sub-reload")
+			show_subs()
 		end
 	end
 end
@@ -87,17 +118,10 @@ local function run_whisper()
 	mp.osd_message("Step 2/2: Generating Live AI Subtitles...", 4)
 
 	os.remove(log_path)
-	os.remove(srt_path)
 	last_pos = 0
-	sub_index = 1
-	subs_added = false
-	if prefill ~= "" then
-		local f = io.open(srt_path, "w")
-		f:write(prefill)
-		f:close()
-		for _ in prefill:gmatch("%-%->") do sub_index = sub_index + 1 end
-		mp.commandv("sub-add", srt_path)
-		subs_added = true
+	if not video then
+		os.remove(srt_path)
+		sub_index = 1
 	end
 
 	timer = mp.add_periodic_timer(1, poll_log)
@@ -158,6 +182,18 @@ local function generate_subs()
 		return
 	end
 
+	if video then
+		resume()
+		-- ponytail: "done" = captions reach the last minute; a long silent tail gets re-run (quickly) on each open
+		local dur = mp.get_property_number("duration")
+		if dur and offset_ms >= dur * 1000 - 60000 then
+			mp.osd_message("Already captioned", 3)
+			return
+		end
+	else
+		offset_ms = 0
+	end
+
 	is_processing = true
 	mp.osd_message("Step 1/2: Extracting audio to RAM...", 3)
 	os.remove(wav_path)
@@ -187,14 +223,13 @@ mp.add_key_binding("ctrl+c", "generate_subs", generate_subs)
 
 if opts.auto then
 	mp.register_event("file-loaded", function()
-		offset_ms, prefill = 0, ""
+		-- a file the auto mode can't caption falls back to Ctrl+C on the temp file, never the last lecture's .srt
+		video, added, srt_path = nil, false, tmp_srt
 		local path = mp.get_property("path")
-		local f = path and io.open((path:gsub("%.[^./]+$", ".srt")), "r")
-		if f then
-			prefill = f:read("*a"):gsub("%s+$", "") .. "\n\n"
-			f:close()
-			offset_ms = 300000
-		end
+		local srt = path and path:gsub("%.[^./]+$", ".srt")
+		if not srt or srt == path then return end -- no extension: the .srt path would be the video itself
+		-- live captions go next to the video, so closing and reopening carries on from where they stopped
+		video, srt_path = path, srt
 		generate_subs()
 	end)
 end

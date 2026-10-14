@@ -168,8 +168,9 @@ def make_srt(mp4: Path, src: str | None = None):
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
         # -mc 0: no previous text as context, else one line can repeat for the rest of the lecture
         run_pausable(["whisper-cli", "-mc", "0", "-m", str(MODEL), "-f", str(wav), "-osrt", "-of", str(Path(d) / "a")])
-        # deleted from the library or unqueued meanwhile → drop the result
-        if mp4.exists() or mp4.with_name(mp4.name + ".part").exists():
+        # deleted from the library or unqueued meanwhile → drop the result; an existing srt is
+        # mpv's live captions (lecture opened before this finished), which go further than this pre-pass
+        if (mp4.exists() or mp4.with_name(mp4.name + ".part").exists()) and not mp4.with_suffix(".srt").exists():
             shutil.move(Path(d) / "a.srt", mp4.with_suffix(".srt"))  # only a finished srt ever lands
 
 

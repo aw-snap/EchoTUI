@@ -66,7 +66,8 @@ uv tool install -e .
    ```
 
 After that, EchoTUI captions the first 5 minutes of each lecture while it downloads, and mpv live-captions
-the rest while you watch. In any other mpv session, press `ctrl+c` to caption the current video.
+the rest while you watch into the `.srt` next to the video. Closing and reopening a lecture picks up both
+playback and captions where they stopped. In any other mpv session, press `ctrl+c` to caption the current video.
 
 ## Setup
 
