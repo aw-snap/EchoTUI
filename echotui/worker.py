@@ -96,7 +96,7 @@ def step(client, item: dict):
         dest = video_path(item["course"], row, int(n), q)
         dest.parent.mkdir(parents=True, exist_ok=True)
         if not dest.exists():
-            if q == "full" and store.MODEL.exists() and not dest.with_suffix(".srt").exists():
+            if q == "full" and store.subtitles() and store.MODEL.exists() and not dest.with_suffix(".srt").exists():
                 # the low file has the same audio with far less video to pull alongside the download
                 caption_live(dest, client.signed_url(row["media"], model.pick_file(f, "low"), row["id"]))
             url = client.signed_url(row["media"], model.pick_file(f, q), row["id"])
@@ -145,6 +145,8 @@ def run_pausable(cmd: list[str], tick: float = 1.0):
 
 
 def pending_subs() -> list[Path]:
+    if not store.subtitles():
+        return []
     return [p for p in sorted(store.VIDEOS.glob("*/*.mp4"))
             if not p.name.endswith("-low.mp4") and not p.with_suffix(".srt").exists()
             and p not in _bad and p not in _busy]

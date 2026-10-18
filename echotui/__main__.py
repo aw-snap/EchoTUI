@@ -1,13 +1,35 @@
+import os
 import shutil
 import sys
 
-REQUIRED = ("mpv", "ffmpeg", "whisper-cli")
+WHISPER = "https://github.com/ggml-org/whisper.cpp#quick-start"
+
+
+def install_hint(missing: list[str]) -> str:
+    """The commands that install `missing` with this system's package manager."""
+    system = [m for m in missing if m != "whisper-cli"]
+    whisper = "whisper-cli" in missing
+    if shutil.which("pacman"):
+        if aur := shutil.which("yay") or shutil.which("paru"):
+            return f"  {os.path.basename(aur)} -S --needed {' '.join(system + (['whisper.cpp'] if whisper else []))}"
+        lines = [f"  sudo pacman -S --needed {' '.join(system)}"] if system else []
+        return "\n".join(lines + (["  whisper.cpp from the AUR"] if whisper else []))
+    mgr = next((m for m in ("apt", "dnf", "zypper") if shutil.which(m)), None)
+    lines = [f"  sudo {mgr} install {' '.join(system)}" if mgr else f"  {' '.join(system)} from your distro"] if system else []
+    return "\n".join(lines + ([f"  whisper.cpp: build it from {WHISPER}"] if whisper else []))
 
 
 def main():
-    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
-    if cmd in ("", "login") and (missing := [c for c in REQUIRED if not shutil.which(c)]):
-        sys.exit(f"echotui needs {', '.join(missing)} on your PATH — see the README's Requirements")
+    args = sys.argv[1:]
+    if "--no-subtitles" in args:
+        args.remove("--no-subtitles")
+        os.environ["ECHOTUI_SUBTITLES"] = "0"  # inherited by the worker and mpv helper this run starts
+    cmd = args[0] if args else ""
+    from . import store
+    need = ["mpv", "ffmpeg"] + (["whisper-cli"] if store.subtitles() else [])
+    if cmd in ("", "login") and (missing := [c for c in need if not shutil.which(c)]):
+        skip = "\nor run `echotui --no-subtitles` to go without subtitles" if "whisper-cli" in missing else ""
+        sys.exit(f"echotui needs {', '.join(missing)}. Install with:\n{install_hint(missing)}{skip}")
     if cmd == "login":
         from . import api
         api.login_cli()
@@ -18,9 +40,9 @@ def main():
         from pathlib import Path
 
         from . import player
-        player.pip(Path(sys.argv[2]), Path(sys.argv[3]) if len(sys.argv) > 3 else None)
+        player.pip(Path(args[1]), Path(args[2]) if len(args) > 2 else None)
     elif cmd:
-        sys.exit("usage: echotui [login]")
+        sys.exit("usage: echotui [--no-subtitles] [login]")
     else:
         from . import tui
         tui.run()

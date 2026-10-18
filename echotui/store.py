@@ -11,6 +11,13 @@ CACHE = Path.home() / ".cache/echotui"
 VIDEOS = Path.home() / "Videos/Echo360"
 _OLD_MODEL = Path.home() / ".config/mpv/ggml-small.en.bin"  # where the README used to have you put it
 MODEL = _OLD_MODEL if _OLD_MODEL.exists() else DATA / "ggml-small.en.bin"  # whisper model, fetched by the worker
+
+
+def subtitles() -> bool:
+    """Off for this run and the worker/mpv helpers it starts after `echotui --no-subtitles`."""
+    return os.environ.get("ECHOTUI_SUBTITLES") != "0"
+
+
 EMPTY = {"email": "", "opened": {}, "queue": []}
 
 

@@ -30,11 +30,11 @@ Linux only. It uses `/proc`, `flock` and `notify-send`.
 | [ffmpeg](https://ffmpeg.org/) | feed previews and duplicate detection |
 | [mpv](https://mpv.io/) | playback |
 | a Secret Service keyring (GNOME Keyring, KWallet, KeePassXC…) | storing your password for automatic re-login |
-| [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-cli` | subtitles |
+| [whisper.cpp](https://github.com/ggml-org/whisper.cpp) `whisper-cli` | subtitles (skip with `--no-subtitles`) |
 | `notify-send` (libnotify), optional | download notifications |
 
-`echotui` checks that `mpv`, `ffmpeg` and `whisper-cli` are on your `PATH` when it starts and names any that are missing.
-On Arch: `sudo pacman -S uv mpv ffmpeg` and `yay -S whisper.cpp`.
+If any are missing, `echotui` says which ones and prints the command that installs them on your
+distro, e.g. `yay -S --needed mpv whisper.cpp` on Arch.
 
 A terminal with image support (kitty, WezTerm, Ghostty, foot, or anything with sixel) gives you
 real preview images. Other terminals fall back to coloured blocks.
@@ -89,8 +89,10 @@ expires.
 ## Usage
 
 ```sh
-echotui
+echotui                  # or: echotui --no-subtitles
 ```
+
+`--no-subtitles` turns captioning off for that run, so `whisper-cli` isn't needed. Subtitles are on by default.
 
 | Key | Where | Action |
 |---|---|---|

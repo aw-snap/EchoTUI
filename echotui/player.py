@@ -25,6 +25,8 @@ def _pids() -> Path:
 
 def mpv_captions() -> list[str]:
     """mpv args for live captions: the bundled script, unless the user installed their own copy (it'd run twice)."""
+    if not store.subtitles():
+        return []
     own = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "mpv/scripts/autocaption.lua"
     return ([] if own.exists() else [f"--script={SCRIPT}"]) + [
         f"--script-opts=autocaption-auto=yes,autocaption-model={store.MODEL}"]
