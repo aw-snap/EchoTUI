@@ -9,11 +9,8 @@ def install_hint(missing: list[str]) -> str:
     """The commands that install `missing` with this system's package manager."""
     system = [m for m in missing if m != "whisper-cli"]
     whisper = "whisper-cli" in missing
-    if shutil.which("pacman"):
-        if aur := shutil.which("yay") or shutil.which("paru"):
-            return f"  {os.path.basename(aur)} -S --needed {' '.join(system + (['whisper.cpp'] if whisper else []))}"
-        lines = [f"  sudo pacman -S --needed {' '.join(system)}"] if system else []
-        return "\n".join(lines + (["  whisper.cpp from the AUR"] if whisper else []))
+    if shutil.which("pacman"):  # extra/whisper-cpp ships whisper-cli
+        return f"  sudo pacman -S --needed {' '.join(system + (['whisper-cpp'] if whisper else []))}"
     mgr = next((m for m in ("apt", "dnf", "zypper") if shutil.which(m)), None)
     lines = [f"  sudo {mgr} install {' '.join(system)}" if mgr else f"  {' '.join(system)} from your distro"] if system else []
     return "\n".join(lines + ([f"  whisper.cpp: build it from {WHISPER}"] if whisper else []))

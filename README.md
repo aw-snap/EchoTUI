@@ -34,7 +34,7 @@ Linux only. It uses `/proc`, `flock` and `notify-send`.
 | `notify-send` (libnotify), optional | download notifications |
 
 If any are missing, `echotui` says which ones and prints the command that installs them on your
-distro, e.g. `yay -S --needed mpv whisper.cpp` on Arch.
+distro, e.g. `sudo pacman -S --needed mpv ffmpeg whisper-cpp` on Arch.
 
 A terminal with image support (kitty, WezTerm, Ghostty, foot, or anything with sixel) gives you
 real preview images. Other terminals fall back to coloured blocks.
