@@ -183,7 +183,7 @@ def test_unqueue_mid_download_stops_and_removes_partial(monkeypatch):
 
 def test_full_feed_is_captioned_from_the_low_url_while_downloading(monkeypatch, tmp_path):
     (tmp_path / "model.bin").touch()
-    monkeypatch.setattr(worker, "MODEL", tmp_path / "model.bin")
+    monkeypatch.setattr(store, "MODEL", tmp_path / "model.bin")
     calls = []
 
     def fake_srt(mp4, src=None):
@@ -232,3 +232,12 @@ def test_requeue_after_download_is_not_held_back_by_the_poll(monkeypatch):
     store.enqueue(dict(ITEM, feeds={"1": "full"}))
     worker._process(c, tried, poll=300)
     assert store.load()["queue"] == [] and len(c.urls) == 2
+
+
+def test_captions_wait_for_the_next_worker_when_the_model_cannot_be_fetched():
+    mp4 = store.VIDEOS / "COSC264" / "a-s1-full.mp4"
+    mp4.parent.mkdir(parents=True)
+    mp4.touch()
+    worker.subtitle_pass()  # conftest's fetch_model raises OSError, as offline
+    assert worker.pending_subs() == []  # so this worker can exit instead of retrying every tick
+    worker._bad.clear()

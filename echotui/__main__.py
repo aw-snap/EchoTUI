@@ -1,8 +1,13 @@
+import shutil
 import sys
+
+REQUIRED = ("mpv", "ffmpeg", "whisper-cli")
 
 
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd in ("", "login") and (missing := [c for c in REQUIRED if not shutil.which(c)]):
+        sys.exit(f"echotui needs {', '.join(missing)} on your PATH — see the README's Requirements")
     if cmd == "login":
         from . import api
         api.login_cli()

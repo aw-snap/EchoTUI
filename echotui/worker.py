@@ -14,7 +14,7 @@ from . import api, model, player, store
 
 POLL = 300  # seconds between re-checks of a lecture that is still processing
 PREPASS = 300  # seconds of audio captioned ahead of time
-MODEL = Path.home() / ".config/mpv/ggml-small.en.bin"
+MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin"
 _bad: set[Path] = set()  # files whose pre-pass failed; not retried this run
 _busy: set[Path] = set()  # files being captioned right now; one pre-pass per file at a time
 _busy_lock = threading.Lock()
@@ -96,7 +96,7 @@ def step(client, item: dict):
         dest = video_path(item["course"], row, int(n), q)
         dest.parent.mkdir(parents=True, exist_ok=True)
         if not dest.exists():
-            if q == "full" and MODEL.exists() and not dest.with_suffix(".srt").exists():
+            if q == "full" and store.MODEL.exists() and not dest.with_suffix(".srt").exists():
                 # the low file has the same audio with far less video to pull alongside the download
                 caption_live(dest, client.signed_url(row["media"], model.pick_file(f, "low"), row["id"]))
             url = client.signed_url(row["media"], model.pick_file(f, q), row["id"])
@@ -167,7 +167,7 @@ def make_srt(mp4: Path, src: str | None = None):
                         "-t", str(PREPASS), "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(wav)],
                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
         # -mc 0: no previous text as context, else one line can repeat for the rest of the lecture
-        run_pausable(["whisper-cli", "-mc", "0", "-m", str(MODEL), "-f", str(wav), "-osrt", "-of", str(Path(d) / "a")])
+        run_pausable(["whisper-cli", "-mc", "0", "-m", str(store.MODEL), "-f", str(wav), "-osrt", "-of", str(Path(d) / "a")])
         # deleted from the library or unqueued meanwhile → drop the result; an existing srt is
         # mpv's live captions (lecture opened before this finished), which go further than this pre-pass
         if (mp4.exists() or mp4.with_name(mp4.name + ".part").exists()) and not mp4.with_suffix(".srt").exists():
@@ -189,7 +189,19 @@ def caption_live(mp4: Path, url: str):
     threading.Thread(target=run).start()
 
 
+def fetch_model():
+    store.MODEL.parent.mkdir(parents=True, exist_ok=True)
+    api.Client().fetch(MODEL_URL, store.MODEL)  # resumable, so a cut-off download continues next run
+
+
 def subtitle_pass():
+    if not store.MODEL.exists():
+        try:
+            fetch_model()
+        except OSError as e:  # offline: give up on captions this run, the next worker retries
+            print(f"whisper model: {e!r}", flush=True)
+            _bad.update(pending_subs())
+            return
     for mp4 in pending_subs():
         while player.active():
             time.sleep(1)

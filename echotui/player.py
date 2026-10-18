@@ -1,5 +1,6 @@
 """Launch mpv detached, tell whether any echotui-launched mpv is still open, and track what was watched."""
 import json
+import os
 import re
 import shutil
 import socket
@@ -14,11 +15,56 @@ from . import store
 
 _DEVNULL = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 FULL_MARGIN = 600  # closing mpv within the last 10 minutes counts as fully watched
+SCRIPT = Path(__file__).with_name("autocaption.lua")
 FULL_TTL, PARTIAL_TTL, UNWATCHED_TTL = 3600, 4 * 3600, 14 * 86400  # auto-delete delays (seconds)
 
 
 def _pids() -> Path:
     return store.DATA / "mpv"
+
+
+def mpv_captions() -> list[str]:
+    """mpv args for live captions: the bundled script, unless the user installed their own copy (it'd run twice)."""
+    own = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "mpv/scripts/autocaption.lua"
+    return ([] if own.exists() else [f"--script={SCRIPT}"]) + [
+        f"--script-opts=autocaption-auto=yes,autocaption-model={store.MODEL}"]
+
+
+def _hyprctl(*args: str) -> str:
+    return subprocess.run(["hyprctl", *args], capture_output=True, text=True, timeout=5).stdout
+
+
+def float_pip(pid: int, margin: int = 20):
+    """On Hyprland, float, pin and move the PiP window to the bottom-right corner, unless a window rule
+    already floated it. Other desktops get --ontop/--geometry instead (X11 honours them, Wayland may not)."""
+    if not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        return
+    try:
+        def win():
+            return next((c for c in json.loads(_hyprctl("-j", "clients")) if c["pid"] == pid), None)
+        for _ in range(50):  # mpv takes a moment to map its window
+            if w := win():
+                break
+            time.sleep(0.1)
+        else:
+            return
+        if w["floating"]:
+            return
+        sel = f"pid:{pid}"
+        lua = _hyprctl("dispatch", "setfloating", sel).strip() != "ok"  # Lua configs take Lua dispatchers
+        if lua:
+            _hyprctl("dispatch", f"hl.dsp.window.float({{ window = '{sel}', action = 'enable' }})")
+        w = win()
+        m = next(m for m in json.loads(_hyprctl("-j", "monitors")) if m["id"] == w["monitor"])
+        x = m["x"] + round(m["width"] / m["scale"]) - w["size"][0] - margin
+        y = m["y"] + round(m["height"] / m["scale"]) - w["size"][1] - margin
+        if lua:
+            _hyprctl("dispatch", f"hl.dsp.window.pin({{ window = '{sel}' }})")
+            _hyprctl("dispatch", f"hl.dsp.window.move({{ x = {x}, y = {y}, window = '{sel}' }})")
+        else:
+            _hyprctl("--batch", f"dispatch pin {sel}; dispatch movewindowpixel exact {x} {y},{sel}")
+    except (OSError, ValueError, KeyError, TypeError, StopIteration, subprocess.SubprocessError):
+        pass  # PiP still plays, just wherever the compositor put it
 
 
 def lecture_key(path: Path) -> str:
@@ -121,7 +167,7 @@ def pip(main: Path, low: Path | None = None):
         # resume where it was closed last time, unless that counted as fully watched
         start = [f"--start={w['pos']}"] if w.get("pos") and not w.get("full") else []
         full = subprocess.Popen(
-            ["mpv", "--script-opts=autocaption-auto=yes", f"--input-ipc-server={a}", *start, str(main)],
+            ["mpv", *mpv_captions(), f"--input-ipc-server={a}", *start, str(main)],
             start_new_session=True, **_DEVNULL)
         w.update(pid=full.pid, last=time.time())
         pos, dur = w.get("pos"), w.get("dur")  # closed before the first poll → keep the old position
@@ -139,8 +185,8 @@ def pip(main: Path, low: Path | None = None):
         low_cmd = ["mpv", "--no-audio", "--wayland-app-id=mpv-low", f"--input-ipc-server={b}"]
         if crop:
             low_cmd.append(f"--video-crop={crop}")
-        low_cmd += ["--autofit=560x560", str(low)]
-        subprocess.Popen(low_cmd, start_new_session=True, **_DEVNULL)
+        low_cmd += ["--autofit=560x560", "--ontop", "--geometry=-20-20", str(low)]
+        float_pip(subprocess.Popen(low_cmd, start_new_session=True, **_DEVNULL).pid)
     try:
         while _alive(full.pid):
             time.sleep(0.5)

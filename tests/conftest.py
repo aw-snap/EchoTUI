@@ -9,5 +9,9 @@ def tmp_home(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "CACHE", tmp_path / "cache")
     monkeypatch.setattr(store, "VIDEOS", tmp_path / "videos")
     monkeypatch.setattr(worker, "notify", lambda msg: None)  # no real notify-send popups from tests
-    monkeypatch.setattr(worker, "MODEL", tmp_path / "no-model.bin")  # no real whisper runs unless a test opts in
+    monkeypatch.setattr(store, "MODEL", tmp_path / "no-model.bin")  # no real whisper runs unless a test opts in
+
+    def no_download():
+        raise OSError("no model downloads from tests")
+    monkeypatch.setattr(worker, "fetch_model", no_download)
     return tmp_path

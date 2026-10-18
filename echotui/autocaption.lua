@@ -1,12 +1,12 @@
 local utils = require 'mp.utils'
 local options = require 'mp.options'
 
--- echotui starts mpv with --script-opts=autocaption-auto=yes to caption without pressing Ctrl+C
-local opts = { auto = false }
+-- echotui starts mpv with --script-opts=autocaption-auto=yes,autocaption-model=<path> to caption without pressing Ctrl+C
+local opts = { auto = false, model = "~~/ggml-small.en.bin" }
 options.read_options(opts, "autocaption")
 
 local is_windows = package.config:sub(1, 1) == "\\"
-local model_path = mp.command_native({ "expand-path", "~~/ggml-small.en.bin" })
+local model_path = mp.command_native({ "expand-path", opts.model })
 local whisper_cmd = "whisper-cli" -- must be on PATH, or put the full path here
 -- -mc 0: no previous text as context, else one line can repeat for the rest of the lecture
 local whisper_opts = "-mc 0"

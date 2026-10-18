@@ -1,3 +1,4 @@
+import json
 import os
 import signal
 import socket
@@ -186,3 +187,54 @@ def test_pip_resumes_where_it_was_closed_unless_watched_fully(monkeypatch, tmp_p
         assert [a for a in started.pop() if a.startswith("--start")] == want
         # closed before the first poll: the old position survives for next time
         assert store.load()["watched"]["C-2026-09-28-LecA"]["pos"] == 754.2
+
+
+def _fake_hyprland(monkeypatch, lua: bool, floating: bool = False):
+    monkeypatch.setenv("HYPRLAND_INSTANCE_SIGNATURE", "x")
+    sent, state = [], {"floating": floating}
+
+    def hyprctl(*args):
+        if args == ("-j", "clients"):
+            size = [560, 315] if state["floating"] else [1920, 1158]
+            return json.dumps([{"pid": 7, "floating": state["floating"], "monitor": 0, "size": size}])
+        if args == ("-j", "monitors"):
+            return json.dumps([{"id": 0, "x": 0, "y": 0, "width": 3840, "height": 2400, "scale": 2}])
+        sent.append(args)
+        if args[:2] == ("dispatch", "setfloating"):
+            if lua:
+                return "error: ')' expected near 'pid'"
+            state["floating"] = True
+        elif "window.float" in args[-1]:
+            state["floating"] = True
+        return "ok"
+    monkeypatch.setattr(player, "_hyprctl", hyprctl)
+    return sent
+
+
+def test_pip_window_is_floated_pinned_and_cornered_on_classic_hyprland(monkeypatch):
+    sent = _fake_hyprland(monkeypatch, lua=False)
+    player.float_pip(7)
+    assert sent == [("dispatch", "setfloating", "pid:7"),
+                    ("--batch", "dispatch pin pid:7; dispatch movewindowpixel exact 1340 865,pid:7")]
+
+
+def test_pip_window_is_floated_pinned_and_cornered_on_lua_hyprland(monkeypatch):
+    sent = _fake_hyprland(monkeypatch, lua=True)
+    player.float_pip(7)
+    assert [a[-1] for a in sent[1:]] == ["hl.dsp.window.float({ window = 'pid:7', action = 'enable' })",
+                                         "hl.dsp.window.pin({ window = 'pid:7' })",
+                                         "hl.dsp.window.move({ x = 1340, y = 865, window = 'pid:7' })"]
+
+
+def test_a_user_window_rule_that_already_floats_the_pip_is_left_alone(monkeypatch):
+    sent = _fake_hyprland(monkeypatch, lua=False, floating=True)
+    player.float_pip(7)
+    assert sent == []  # a pin here would toggle the rule's pin off
+
+
+def test_bundled_caption_script_is_skipped_when_the_user_installed_their_own(monkeypatch, tmp_path):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert player.mpv_captions()[0] == f"--script={player.SCRIPT}" and player.SCRIPT.exists()
+    (tmp_path / "mpv/scripts").mkdir(parents=True)
+    (tmp_path / "mpv/scripts/autocaption.lua").touch()
+    assert player.mpv_captions() == [f"--script-opts=autocaption-auto=yes,autocaption-model={store.MODEL}"]

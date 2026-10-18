@@ -9,6 +9,8 @@ from pathlib import Path
 DATA = Path.home() / ".local/share/echotui"
 CACHE = Path.home() / ".cache/echotui"
 VIDEOS = Path.home() / "Videos/Echo360"
+_OLD_MODEL = Path.home() / ".config/mpv/ggml-small.en.bin"  # where the README used to have you put it
+MODEL = _OLD_MODEL if _OLD_MODEL.exists() else DATA / "ggml-small.en.bin"  # whisper model, fetched by the worker
 EMPTY = {"email": "", "opened": {}, "queue": []}
 
 
